@@ -1,42 +1,17 @@
 {
   "name": "martinmacura.cz",
-  "version": "0.1.0",
-  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "format": "prettier \"**/*.{mjs,md,json}\" --write"
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
   },
   "dependencies": {
-    "@mantine/core": "^7.1.5",
-    "@mantine/hooks": "^7.1.5",
-    "@tabler/icons-react": "^2.39.0",
-    "next": "13.5.6",
-    "react": "^18",
-    "react-dom": "^18.2.0",
-    "zod": "^3.22.4"
-  },
-  "devDependencies": {
-    "@ackee/prettier-config": "^1.1.2",
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "18.2.0",
-    "@typescript-eslint/eslint-plugin": "^6.7.0",
-    "@typescript-eslint/parser": "^6.7.0",
-    "eslint": "^8",
-    "eslint-config-next": "13.5.6",
-    "eslint-config-prettier": "^9.0.0",
-    "eslint-import-resolver-typescript": "^3.6.0",
-    "eslint-plugin-compat": "^4.2.0",
-    "eslint-plugin-prettier": "^5.0.0",
-    "postcss": "^8.4.31",
-    "postcss-color-function": "^4.1.0",
-    "postcss-preset-mantine": "^1.9.0",
-    "postcss-simple-vars": "^7.0.1",
-    "prettier": "3",
-    "typescript": "^5"
-  },
-  "prettier": "./prettierrc.mjs"
+    "astro": "^7.1.3"
+  }
 }
