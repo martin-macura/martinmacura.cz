@@ -1,5 +1,28 @@
 ---
-import "@fontsource-variable/archivo/wdth.css";
+// The type is 8-bit too, to go with the pixel scene behind it. The latin subset (12 kB) is inlined as a data
+// URI, so the name never flashes in a fallback font; latin-ext (Czech letters) is fetched only if needed.
+import pixelLatin from "@fontsource/press-start-2p/files/press-start-2p-latin-400-normal.woff2?inline";
+import pixelLatinExt from "@fontsource/press-start-2p/files/press-start-2p-latin-ext-400-normal.woff2?url";
+
+const fontFaces = `
+@font-face {
+	font-family: "Press Start 2P";
+	font-style: normal;
+	font-weight: 400;
+	font-display: block;
+	src: url(${pixelLatinExt}) format("woff2");
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: "Press Start 2P";
+	font-style: normal;
+	font-weight: 400;
+	font-display: block;
+	src: url(${pixelLatin}) format("woff2");
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}`;
+
+const name = ["Martin", "Macura"];
 
 const links = [
 	{
@@ -27,12 +50,21 @@ const links = [
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 		<title>Martin Macura</title>
 		<meta name="description" content="Martin Macura, a guy from Prague" />
+		<style is:inline set:html={fontFaces}></style>
 	</head>
 	<body>
+		<canvas class="bg" aria-hidden="true"></canvas>
 		<main>
 			<h1 aria-label="Martin Macura">
-				<span aria-hidden="true">Martin</span>
-				<span aria-hidden="true">Macura</span>
+				{
+					name.map((word) => (
+						<span class="line" aria-hidden="true">
+							{[...word].map((letter) => (
+								<span class="ch">{letter}</span>
+							))}
+						</span>
+					))
+				}
 			</h1>
 			<div class="meta">
 				<p>a guy from Prague</p>
@@ -59,6 +91,15 @@ const links = [
 		color-scheme: dark;
 		--paper: #0c0c0c;
 		--ink: #f2f2f2;
+		--pixel: "Press Start 2P", ui-monospace, Menlo, Consolas, monospace;
+		--snap: 4px; /* step for the size of the name, see h1 */
+	}
+
+	/* on 1x screens half a screen pixel per font pixel would smear, so step in whole ones */
+	@media (max-resolution: 1dppx) {
+		:root {
+			--snap: 8px;
+		}
 	}
 
 	* {
@@ -70,17 +111,43 @@ const links = [
 	body {
 		background: var(--paper);
 		color: var(--ink);
-		font-family: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
-		font-size: 1.125rem;
-		line-height: 1.3;
+		font-family: var(--pixel);
+		font-size: 1rem; /* the font is 8 pixels to the em, so 16px is two screen pixels per font pixel: sharp */
+		line-height: 1.6;
+		font-synthesis: none; /* one weight only, never a fake bold */
 		-webkit-font-smoothing: antialiased;
 	}
 
+	/* WebGL background (src/scripts/background.ts); fades in once its first frame is drawn */
+	.bg {
+		position: fixed;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+		image-rendering: pixelated; /* the scene is rendered at a fraction of the resolution on purpose */
+		opacity: 0;
+		transition: opacity 1.4s ease;
+	}
+
+	.bg.on {
+		opacity: 1;
+	}
+
+	/* landscape phones: no room for the diorama, so the page is just the name and the links */
+	@media (max-height: 500px) and (min-aspect-ratio: 1/1) {
+		.bg {
+			display: none;
+		}
+	}
+
 	main {
+		position: relative;
+		z-index: 1;
 		display: grid;
 		place-content: center;
 		justify-items: center;
-		gap: 2.5rem;
+		gap: 1.5rem;
 		min-height: 100vh;
 		min-height: 100svh;
 		padding: 2rem 1rem;
@@ -89,40 +156,71 @@ const links = [
 		text-align: center;
 	}
 
-	/* Name: width and weight axes are driven by the pointer (see script below). */
+	/* Name: two lines of six letters, so both are exactly 6em wide. The font is 8 pixels to the em, so the size
+	   snaps to a multiple of --snap (a whole number of screen pixels per font pixel) where the browser knows
+	   round(). The letters hop, see the script below. */
 	h1 {
-		font-size: min(19.5cqw, 34svh);
-		line-height: 0.86;
-		letter-spacing: -0.02em;
+		font-size: min(13.5cqw, 23svh);
+		font-size: round(down, min(13.5cqw, 23svh), var(--snap));
+		line-height: 1.15;
 	}
 
-	h1 span {
+	.line {
+		display: flex;
+		justify-content: center;
+	}
+
+	.ch {
 		display: block;
-		font-variation-settings:
-			"wdth" 100,
-			"wght" 800;
+		transform: translateY(calc(var(--hop, 0) * -0.125em)); /* --hop counts font pixels */
 	}
 
+	/* Landscape screens tall enough to show the diorama: the name is a little smaller and sits higher, so the
+	   programmer and his trace get the bottom of the page and the finished product gets the top.
+	   Keep this condition in step with the .bg rule above and the matchMedia in the script below. */
+	@media (min-aspect-ratio: 1/1) and (min-height: 501px) {
+		main {
+			padding-bottom: 14svh;
+		}
+
+		h1 {
+			font-size: min(13.5cqw, 17svh);
+			font-size: round(down, min(13.5cqw, 17svh), var(--snap));
+		}
+	}
+
+	/* the motto above the links: the wide font would otherwise stretch this row into the corner parts of the scene */
 	.meta {
 		display: flex;
-		flex-wrap: wrap;
-		justify-content: center;
-		align-items: baseline;
-		gap: 0.5rem 2rem;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.5rem;
+		/* a hard outline, like the drop shadow on the labels in the scene: keeps the text readable when a trace runs behind it */
+		text-shadow:
+			2px 0 var(--paper),
+			-2px 0 var(--paper),
+			0 2px var(--paper),
+			0 -2px var(--paper),
+			2px 2px var(--paper),
+			-2px 2px var(--paper),
+			2px -2px var(--paper),
+			-2px -2px var(--paper);
 	}
 
 	ul {
 		list-style: none;
 		display: flex;
-		gap: 1.5rem;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: 0.5rem 1.25rem;
 	}
 
 	a {
 		color: inherit;
-		font-weight: 500;
 		text-decoration: underline;
 		text-decoration-thickness: 2px;
-		text-underline-offset: 0.25em;
+		text-decoration-skip-ink: none;
+		text-underline-offset: 0.35em;
 	}
 
 	a:hover,
@@ -131,45 +229,69 @@ const links = [
 		color: var(--paper);
 		outline: 0;
 		text-decoration-color: transparent;
-		box-shadow: 0 0 0 0.2em var(--ink);
+		text-shadow: none;
+		box-shadow: 0 0 0 0.25em var(--ink);
 	}
 </style>
 
 <script>
-	// Line one widens while line two narrows as the pointer moves left-to-right;
-	// vertical position sets the weight. Idle for 2.5s and it drifts on its own.
-	if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-		const lines = [...document.querySelectorAll<HTMLElement>("h1 span")];
-		let targetX = 0.5;
-		let targetY = 0.5;
-		let x = 0.5;
-		let y = 0.5;
-		let lastInput = -Infinity;
-		let lastFrame = 0;
+	// three.js is heavy: load it after first paint so the name never waits on it, and not at all
+	// where the canvas is hidden (see the .bg media query above).
+	const hidden = matchMedia("(max-height: 500px) and (min-aspect-ratio: 1/1)");
+	let booted = false;
+	const boot = () => {
+		if (booted || hidden.matches) return;
+		booted = true;
+		import("../scripts/background")
+			.then((m) => m.start(document.querySelector<HTMLCanvasElement>(".bg")!))
+			.catch(() => {});
+	};
+	hidden.addEventListener("change", boot);
+	if ("requestIdleCallback" in window) requestIdleCallback(boot, { timeout: 1500 });
+	else setTimeout(boot, 300);
+</script>
 
-		const aim = (clientX: number, clientY: number) => {
-			targetX = clientX / innerWidth;
-			targetY = clientY / innerHeight;
+<script>
+	// The letters hop like the toys in the background: whole font pixels, at stop-motion speed.
+	// A wave runs through the name on its own; letters near the pointer jump higher.
+	if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+		const title = document.querySelector<HTMLElement>("h1")!;
+		const rows = [...title.querySelectorAll<HTMLElement>(".line")].map((line) => [...line.querySelectorAll<HTMLElement>(".ch")]);
+		const shown = rows.map((row) => row.map(() => 0));
+		let pointer: [number, number] = [0, 0];
+		let lastInput = -Infinity;
+
+		const aim = (x: number, y: number) => {
+			pointer = [x, y];
 			lastInput = performance.now();
 		};
 		addEventListener("pointermove", (e) => aim(e.clientX, e.clientY));
 		addEventListener("touchmove", (e) => aim(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
 
-		const frame = (t: number) => {
-			if (t - lastInput > 2500) {
-				targetX = 0.5 + 0.5 * Math.sin(t / 2600);
-				targetY = 0.5 + 0.5 * Math.sin(t / 3700 + 1);
-			}
-			const ease = 1 - Math.exp(-(t - lastFrame) / 140);
-			x += (targetX - x) * ease;
-			y += (targetY - y) * ease;
-			const weight = Math.round(200 + 700 * y);
-			lines.forEach((line, i) => {
-				const width = 62 + 63 * (i === 0 ? x : 1 - x);
-				line.style.fontVariationSettings = `"wdth" ${width.toFixed(1)}, "wght" ${weight}`;
-			});
-			lastFrame = t;
+		let last = 0;
+		const frame = (now: number) => {
 			requestAnimationFrame(frame);
+			if (now - last < 1000 / 12) return;
+			last = now;
+
+			const box = title.getBoundingClientRect();
+			const size = parseFloat(getComputedStyle(title).fontSize); // one letter is 1em wide
+			const rowHeight = box.height / rows.length;
+			const pointed = now - lastInput < 2500;
+
+			rows.forEach((row, j) => {
+				row.forEach((letter, i) => {
+					let hop = Math.sin((now / 1000) * 2.4 - i * 0.9 - j * 1.4) > 0.6 ? 1 : 0;
+					if (pointed) {
+						const near = Math.hypot(box.left + (i + 0.5) * size - pointer[0], box.top + (j + 0.5) * rowHeight - pointer[1]) / (size * 1.6);
+						hop = Math.max(hop, Math.round(3 * Math.max(0, 1 - near)));
+					}
+					if (hop !== shown[j][i]) {
+						shown[j][i] = hop;
+						letter.style.setProperty("--hop", String(hop));
+					}
+				});
+			});
 		};
 		requestAnimationFrame(frame);
 	}
