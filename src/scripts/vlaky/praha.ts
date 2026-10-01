@@ -68,8 +68,10 @@ function makePraha(buf: ArrayBuffer): World {
 	const dv = new DataView(buf);
 	const gw = dv.getUint16(0, true);
 	const gh = dv.getUint16(2, true);
-	const isleX = gw / 2;
-	const isleZ = gh / 2;
+	const hx = gw / 2; // the baked map reaches further than the island, which shows the middle of it
+	const hz = gh / 2;
+	const isleX = 480;
+	const isleZ = 416;
 	const cells = new Uint8Array(buf, 4, gw * gh).slice();
 	const steps = new Uint8Array(buf, 4 + gw * gh, (gw / 2) * (gh / 2));
 	const at = 4 + gw * gh + (gw / 2) * (gh / 2);
@@ -89,15 +91,15 @@ function makePraha(buf: ArrayBuffer): World {
 	const data: Data = { gw, gh, cells, steps, houses, byChunk };
 
 	const cellAt = (x: number, z: number) => {
-		const ix = Math.floor(x) + isleX;
-		const iz = Math.floor(z) + isleZ;
+		const ix = Math.floor(x) + hx;
+		const iz = Math.floor(z) + hz;
 		return ix >= 0 && iz >= 0 && ix < gw && iz < gh ? data.cells[iz * gw + ix] : 0;
 	};
 	const isWater = (x: number, z: number) => (cellAt(x, z) & 1) === 1;
 	const roadAt = (x: number, z: number) => ((cellAt(x, z) >> 1) & 3) > 0;
 	const stepAt = (x: number, z: number) => {
-		const ix = Math.floor(x + isleX) >> 1;
-		const iz = Math.floor(z + isleZ) >> 1;
+		const ix = Math.floor(x + hx) >> 1;
+		const iz = Math.floor(z + hz) >> 1;
 		return ix >= 0 && iz >= 0 && ix < gw / 2 && iz < gh / 2 ? data.steps[iz * (gw / 2) + ix] : 0;
 	};
 	const hillHeight = (x: number, z: number) => stepAt(x, z) * STEP;
@@ -106,8 +108,8 @@ function makePraha(buf: ArrayBuffer): World {
 		for (const [cx, cz, r] of carves) {
 			for (let iz = Math.floor(cz - r); iz <= Math.ceil(cz + r); iz++) {
 				for (let ix = Math.floor(cx - r); ix <= Math.ceil(cx + r); ix++) {
-					const gx = ix + isleX;
-					const gz = iz + isleZ;
+					const gx = ix + hx;
+					const gz = iz + hz;
 					if (gx < 0 || gz < 0 || gx >= gw || gz >= gh) continue;
 					if (Math.hypot(ix + 0.5 - cx, iz + 0.5 - cz) <= r) data.cells[gz * gw + gx] &= ~1;
 				}
