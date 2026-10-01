@@ -1,33 +1,13 @@
 ---
-// The type is 8-bit too, to go with the pixel scene behind it. The latin subset (12 kB) is inlined as a data
-// URI, so the name never flashes in a fallback font; latin-ext (Czech letters) is fetched only if needed.
-import pixelLatin from "@fontsource/press-start-2p/files/press-start-2p-latin-400-normal.woff2?inline";
-import pixelLatinExt from "@fontsource/press-start-2p/files/press-start-2p-latin-ext-400-normal.woff2?url";
-
-const fontFaces = `
-@font-face {
-	font-family: "Press Start 2P";
-	font-style: normal;
-	font-weight: 400;
-	font-display: block;
-	src: url(${pixelLatinExt}) format("woff2");
-	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-@font-face {
-	font-family: "Press Start 2P";
-	font-style: normal;
-	font-weight: 400;
-	font-display: block;
-	src: url(${pixelLatin}) format("woff2");
-	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}`;
+import Icons from "../components/Icons.astro";
+import { fontFaces } from "../lib/pixel-font";
 
 const name = ["Martin", "Macura"];
 
 const links = [
 	{
 		name: "GitHub",
-		href: "https://github.com/2bad2furious",
+		href: "https://github.com/martin-macura",
 	},
 	{
 		name: "X",
@@ -46,13 +26,7 @@ const links = [
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<meta name="color-scheme" content="dark" />
-		<meta name="theme-color" content="#0c0c0c" />
-		<link rel="icon" href="/favicon.ico" sizes="48x48" />
-		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-		<link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32" />
-		<link rel="icon" href="/favicon-16x16.png" type="image/png" sizes="16x16" />
-		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-		<link rel="manifest" href="/site.webmanifest" />
+		<Icons />
 		<title>Martin Macura</title>
 		<meta name="description" content="Martin Macura, a guy from Prague" />
 		<style is:inline set:html={fontFaces}></style>

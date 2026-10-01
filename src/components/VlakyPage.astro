@@ -1,0 +1,268 @@
+---
+import { fontFaces } from "../lib/pixel-font";
+import Icons from "./Icons.astro";
+
+interface Props {
+	/** which town: the fictional island or the real Prague */
+	world: "fiction" | "praha";
+	title: string;
+	description: string;
+	label: string;
+	heading: string;
+	/** a link to the other town */
+	other: { href: string; text: string };
+}
+const { world, title, description, label, heading, other } = Astro.props;
+---
+
+<!doctype html>
+<html lang="cs">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="dark" />
+		<Icons />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<style is:inline set:html={fontFaces}></style>
+	</head>
+	<body>
+		<canvas class="scene" role="img" aria-label={label} data-world={world}></canvas>
+		<header>
+			<a href="/">← martinmacura.cz</a>
+			<h1>{heading}</h1>
+			<a class="other" href={other.href}>{other.text}</a>
+		</header>
+		<div class="mode" role="group" aria-label="Den nebo noc">
+			<button type="button" data-mode="day">DEN</button>
+			<button type="button" data-mode="night">NOC</button>
+		</div>
+		<p class="hint" aria-hidden="true">TÁHNI = POSUN · KOLEČKO = ZOOM</p>
+		{
+			world === "praha" && (
+				<p class="credit">
+					<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">
+						© OpenStreetMap contributors
+					</a>
+				</p>
+			)
+		}
+		<p class="fallback">Tohle město potřebuje WebGL, které tady nejede.</p>
+	</body>
+</html>
+
+<style is:global>
+	:root {
+		color-scheme: dark;
+		--paper: #0c0c0c;
+		--ink: #f2f2f2;
+		--sky: #9ad1ff;
+	}
+
+	:root.night {
+		--sky: #070a16;
+	}
+
+	* {
+		box-sizing: border-box;
+		margin: 0;
+		padding: 0;
+	}
+
+	body {
+		min-height: 100svh;
+		background: var(--sky);
+		transition: background 0.6s ease;
+		color: var(--ink);
+		font-family: "Press Start 2P", ui-monospace, Menlo, Consolas, monospace;
+		font-size: 0.75rem;
+		line-height: 1.6;
+		font-synthesis: none;
+		-webkit-font-smoothing: antialiased;
+	}
+
+	.scene {
+		position: fixed;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		image-rendering: pixelated;
+		touch-action: none; /* the scene handles drag and pinch itself */
+		cursor: grab;
+		opacity: 0;
+		transition: opacity 1s ease;
+	}
+
+	.scene.drag {
+		cursor: grabbing;
+	}
+
+	.scene.on {
+		opacity: 1;
+	}
+
+	header,
+	.hint,
+	.mode {
+		position: fixed;
+		left: 1rem;
+		z-index: 1;
+		text-shadow:
+			2px 0 var(--paper),
+			-2px 0 var(--paper),
+			0 2px var(--paper),
+			0 -2px var(--paper),
+			2px 2px var(--paper),
+			-2px 2px var(--paper),
+			2px -2px var(--paper),
+			-2px -2px var(--paper);
+	}
+
+	header {
+		top: 1rem;
+	}
+
+	h1 {
+		margin-top: 0.75rem;
+		font-size: 1.5rem;
+		font-weight: 400;
+		line-height: 1.2;
+	}
+
+	.mode {
+		left: auto;
+		top: 1rem;
+		right: 1rem;
+		display: flex;
+	}
+
+	.mode button {
+		font: inherit;
+		color: var(--ink);
+		background: var(--paper);
+		border: 2px solid var(--ink);
+		padding: 0.5rem 0.75rem;
+		cursor: pointer;
+		text-shadow: none;
+	}
+
+	.mode button + button {
+		border-left-width: 0;
+	}
+
+	.mode button[aria-pressed="true"] {
+		background: var(--ink);
+		color: var(--paper);
+	}
+
+	.mode button:focus-visible {
+		outline: 2px solid var(--ink);
+		outline-offset: 3px;
+	}
+
+	.other {
+		display: inline-block;
+		margin-top: 0.75rem;
+		font-size: 0.625rem;
+	}
+
+	.credit {
+		position: fixed;
+		left: 1rem;
+		bottom: 1rem;
+		z-index: 1;
+		font-size: 0.5rem;
+		text-shadow:
+			2px 0 var(--paper),
+			-2px 0 var(--paper),
+			0 2px var(--paper),
+			0 -2px var(--paper);
+	}
+
+	.hint {
+		left: auto;
+		right: 1rem;
+		bottom: 1rem;
+		font-size: 0.625rem;
+		text-align: right;
+		transition: opacity 0.6s ease;
+	}
+
+	.touched .hint {
+		opacity: 0;
+	}
+
+	a {
+		color: inherit;
+		text-decoration: underline;
+		text-decoration-thickness: 2px;
+		text-underline-offset: 0.35em;
+	}
+
+	a:hover,
+	a:focus-visible {
+		background: var(--ink);
+		color: var(--paper);
+		outline: 0;
+		text-decoration-color: transparent;
+		text-shadow: none;
+		box-shadow: 0 0 0 0.25em var(--ink);
+	}
+
+	.fallback {
+		display: none;
+		position: fixed;
+		inset: 0;
+		place-content: center;
+		padding: 2rem;
+		text-align: center;
+	}
+
+	.no-webgl .fallback {
+		display: grid;
+	}
+</style>
+
+<script>
+	import { start } from "../scripts/vlaky";
+
+	const root = document.documentElement;
+	const buttons = [...document.querySelectorAll<HTMLButtonElement>(".mode button")];
+	let stored: string | null = null;
+	try {
+		stored = localStorage.getItem("vlaky-mode");
+	} catch {
+		// private window: no memory, no problem
+	}
+	let night = stored ? stored === "night" : matchMedia("(prefers-color-scheme: dark)").matches;
+
+	const show = () => {
+		root.classList.toggle("night", night);
+		for (const b of buttons) b.setAttribute("aria-pressed", String((b.dataset.mode === "night") === night));
+	};
+	show();
+
+	const canvas = document.querySelector<HTMLCanvasElement>(".scene")!;
+	const scene = (async () => {
+		if (canvas.dataset.world !== "praha") return start(canvas, { night });
+		try {
+			const { loadPraha } = await import("../scripts/vlaky/praha");
+			return start(canvas, { night, world: await loadPraha("/vlaky/praha.dat") });
+		} catch {
+			root.classList.add("no-webgl");
+			return null;
+		}
+	})();
+	for (const b of buttons) {
+		b.addEventListener("click", async () => {
+			night = b.dataset.mode === "night";
+			show();
+			try {
+				localStorage.setItem("vlaky-mode", night ? "night" : "day");
+			} catch {
+				// not remembered
+			}
+			(await scene)?.setNight(night);
+		});
+	}
+</script>
