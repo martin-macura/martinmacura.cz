@@ -128,7 +128,7 @@ function makePraha(buf: ArrayBuffer): World {
 			return Math.floor(s * f + 1e-6) * STEP;
 		};
 
-		return function build(cx: number, cz: number): Chunk {
+		return function build(cx: number, cz: number, far: boolean): Chunk {
 			const x0 = cx * CH;
 			const z0 = cz * CH;
 			const list: Box[] = [];
@@ -186,7 +186,7 @@ function makePraha(buf: ArrayBuffer): World {
 						else if (!road && ((c >> 4) & 3) === 1 && h === 0) kind = 2;
 						else if (!road && ((c >> 4) & 3) === 2 && h === 0) kind = 3;
 						if (kind === 4 || kind === 5 || kind === 7) {
-							if (hash2(Math.floor(x), Math.floor(z)) % 29 === 0 && railDist(x, z) > 2.5) {
+							if (!far && hash2(Math.floor(x), Math.floor(z)) % 29 === 0 && railDist(x, z) > 2.5) {
 								add(0.1, 1.3, 0.1, COLORS.dark, x + 0.4, h + 0.65, z + 0.4);
 								lamp(0.26, 0.26, 0.26, COLORS.lit, x + 0.4, h + 1.4, z + 0.4);
 							}
@@ -212,13 +212,21 @@ function makePraha(buf: ArrayBuffer): World {
 
 			// --- hills: columns of 2 x 2
 			const conifer = (x: number, z: number, y: number) => {
-				add(0.2, 0.4, 0.2, COLORS.wood, x, y + 0.2, z);
+			if (far) {
+				add(1, 1.3, 1, 0x24683c, x, y + 0.65, z);
+				return;
+			}
+			add(0.2, 0.4, 0.2, COLORS.wood, x, y + 0.2, z);
 				add(1.1, 0.55, 1.1, 0x1f5a34, x, y + 0.65, z);
 				add(0.8, 0.5, 0.8, 0x24683c, x, y + 1.15, z);
 				add(0.45, 0.45, 0.45, 0x2a7545, x, y + 1.6, z);
 			};
 			const tree = (x: number, z: number, y: number, k: number) => {
-				add(0.16, 0.45, 0.16, COLORS.wood, x, y + 0.22, z);
+			if (far) {
+				add(0.75, 0.9, 0.75, LEAVES[k % 3], x, y + 0.6, z);
+				return;
+			}
+			add(0.16, 0.45, 0.16, COLORS.wood, x, y + 0.22, z);
 				add(0.75, 0.75, 0.75, LEAVES[k % 3], x, y + 0.8, z);
 				if (k % 2) add(0.5, 0.5, 0.5, LEAVES[(k >>> 2) % 3], x, y + 1.35, z);
 			};
@@ -314,16 +322,18 @@ function makePraha(buf: ArrayBuffer): World {
 				} else {
 					const rise = d > 3 ? 0.4 : 0.3;
 					add(w + 0.12, rise, d + 0.12, roof, x, gmax + h + rise / 2, z, ry);
-					add(w + 0.12, rise, d * 0.64, roof, x, gmax + h + rise * 1.5, z, ry);
-					add(w + 0.12, rise, d * 0.28, roof, x, gmax + h + rise * 2.5, z, ry);
+					if (!far) {
+						add(w + 0.12, rise, d * 0.64, roof, x, gmax + h + rise * 1.5, z, ry);
+						add(w + 0.12, rise, d * 0.28, roof, x, gmax + h + rise * 2.5, z, ry);
+					}
 				}
 				if (kind & 1 && w > 1.4) {
 					const [tx, tz] = place(w / 2 - 0.6, 0);
 					add(1.1, h * 1.7, 1.1, wall, tx, gmax + (h * 1.7) / 2, tz, ry);
-					for (let t = 0; t < 4; t++) add(1.2 - t * 0.28, 0.6, 1.2 - t * 0.28, 0x4a5560, tx, gmax + h * 1.7 + 0.3 + t * 0.6, tz, ry);
+					for (let t = 0; t < (far ? 1 : 4); t++) add(1.2 - t * 0.28, far ? 1.2 : 0.6, 1.2 - t * 0.28, 0x4a5560, tx, gmax + h * 1.7 + (far ? 0.6 : 0.3 + t * 0.6), tz, ry);
 				}
 				// windows on the long sides: dark by day, lit at night
-				if (h >= 1.3) {
+				if (!far && h >= 1.3) {
 					const cols = clamp(Math.floor(w / 1.8), 1, 4);
 					const rows = clamp(Math.floor((h - 0.4) / 1.1), 1, 3);
 					for (let row = 0; row < rows; row++) {

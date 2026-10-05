@@ -21,5 +21,6 @@ export interface World {
 	roadAt(x: number, z: number): boolean;
 	/** dry land is carved out around [x, z, radius] */
 	initWater(carves: [number, number, number][]): void;
-	createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): (cx: number, cz: number) => Chunk;
+	/** `far` builds the coarse version for zoomed-out views: no windows, lamps or small details */
+	createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): (cx: number, cz: number, far: boolean) => Chunk;
 }
