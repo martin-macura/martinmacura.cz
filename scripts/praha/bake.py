@@ -2,7 +2,8 @@
 """Step 2: turns the cache into public/vlaky/praha.dat (gzip), the one file the /vlaky/praha scene loads.
 
 layout of the decompressed data (little endian):
-  u16 width, u16 height            the grid, one cell per unit, (0, 0) is the middle
+  u16 0, u16 width, u16 height, i16 x0, i16 z0    the grid, one cell per unit; x0, z0 is where the first cell is in the world
+                                   (a file from before this header starts with the width and height, and is centred on (0, 0))
   width*height bytes               per cell: bit0 water, bits1-2 road (0 none, 1 street, 2 avenue, 3 motorway), bit3 bridge, bits4-5 green (0 none, 1 park, 2 wood)
   (width/2)*(height/2) bytes       terrain, for every 2 x 2 cells: steps of 8 m above the river
   u32 count, then count * 10 bytes buildings: i16 x*4, i16 z*4, u8 w*8, u8 d*8, u8 angle (0..255 = 0..pi), u8 metres, u8 kind (1 church, 2 flat roof, 4 big)
@@ -13,14 +14,14 @@ from PIL import Image, ImageDraw
 from common import *
 
 OUT = os.path.join(HERE, "..", "..", "public", "vlaky", "praha.dat")
-GW, GH = ISLE_X * 2, ISLE_Z * 2
-cell = lambda p: (p[0] + ISLE_X, p[1] + ISLE_Z)
+# the grid (GX0, GZ0, GW, GH) comes from common.py: the middle of the city, or all of it with PRAHA_FULL=1
+cell = lambda p: (p[0] - GX0, p[1] - GZ0)
 
 # --- water
 water = Image.new("L", (GW, GH), 0)
 wd = ImageDraw.Draw(water)
 holes = []
-for el in load("water"):
+for el in layer("water"):
     t = el.get("tags", {})
     if t.get("natural") != "water" and t.get("waterway") != "riverbank":
         continue
@@ -37,7 +38,7 @@ AVENUE = {"primary", "secondary", "tertiary", "primary_link", "secondary_link", 
 road = Image.new("L", (GW, GH), 0)
 bridge = Image.new("L", (GW, GH), 0)
 rd, bd = ImageDraw.Draw(road), ImageDraw.Draw(bridge)
-ways = [e for e in load("highways") if "geometry" in e and e["tags"].get("tunnel") not in ("yes", "building_passage")]
+ways = [e for e in layer("highways") if "geometry" in e and e["tags"].get("tunnel") not in ("yes", "building_passage")]
 for cls, width, names in ((1, 1, STREET), (2, 2, AVENUE), (3, 3, {"motorway", "motorway_link"})):
     for e in ways:
         if e["tags"]["highway"] in names:
@@ -49,7 +50,7 @@ for cls, width, names in ((1, 1, STREET), (2, 2, AVENUE), (3, 3, {"motorway", "m
 # --- green
 green = Image.new("L", (GW, GH), 0)
 gd = ImageDraw.Draw(green)
-greens = load("green")
+greens = layer("green")
 def is_wood(t): return t.get("landuse") == "forest" or t.get("natural") in ("wood", "scrub")
 for wood in (False, True):
     for el in greens:
@@ -73,21 +74,18 @@ for f in os.listdir(CACHE):
         _, z, tx, ty = f[:-4].split("-")
         a = np.array(Image.open(os.path.join(CACHE, f)).convert("RGB"), dtype=np.float64)
         tiles[(int(tx), int(ty))] = a[..., 0] * 256 + a[..., 1] + a[..., 2] / 256 - 32768
-def dem(lat, lon):
-    n = 2**Z
-    fx = (lon + 180) / 360 * n
-    fy = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n
-    tx, ty = int(fx), int(fy)
-    t = tiles.get((tx, ty))
-    if t is None:
-        return None
-    return t[min(255, int((fy - ty) * 256)), min(255, int((fx - tx) * 256))]
 hx, hz = GW // 2, GH // 2
+# the middle of every 2 x 2 cells, as latitude and longitude, then looked up tile by tile
+lat = LAT0 - (GZ0 + np.arange(hz) * 2 + 1) / KZ
+lon = LON0 + (GX0 + np.arange(hx) * 2 + 1) / KX
+n = 2**Z
+fx = np.broadcast_to((lon + 180) / 360 * n, (hz, hx))
+fy = np.broadcast_to(((1 - np.arcsinh(np.tan(np.radians(lat))) / math.pi) / 2 * n)[:, None], (hz, hx))
+tx, ty = np.floor(fx).astype(int), np.floor(fy).astype(int)
 elev = np.zeros((hz, hx))
-for j in range(hz):
-    for i in range(hx):
-        lat, lon = unproject(i * 2 + 1 - ISLE_X, j * 2 + 1 - ISLE_Z)
-        elev[j, i] = dem(lat, lon) or 0
+for (tix, tiy), t in tiles.items():
+    m = (tx == tix) & (ty == tiy)
+    elev[m] = t[np.minimum(255, ((fy - tiy) * 256).astype(int))[m], np.minimum(255, ((fx - tix) * 256).astype(int))[m]]
 wat = W8.reshape(hz, 2, hx, 2).max(axis=(1, 3)) == 1
 base = float(np.median(elev[wat & (elev > 100)]))
 print("river level", base)
@@ -143,7 +141,7 @@ for el in load_many("buildings-*"):
         x, z, w, d, ang = r
         if w < d:
             w, d, ang = d, w, ang + math.pi / 2
-        if w * d < 0.7 or abs(x) > ISLE_X or abs(z) > ISLE_Z:  # under 25 m2
+        if w * d < 0.7 or not (GX0 < x < GX0 + GW and GZ0 < z < GZ0 + GH):  # under 25 m2
             continue
         ang %= math.pi
         kind = 0
@@ -154,7 +152,7 @@ for el in load_many("buildings-*"):
 print(len(recs), "buildings")
 
 buf = io.BytesIO()
-buf.write(struct.pack("<HH", GW, GH))
+buf.write(struct.pack("<HHHhh", 0, GW, GH, GX0, GZ0))  # 0: the header with the position of the grid
 buf.write(cells.tobytes())
 buf.write(steps.tobytes())
 buf.write(struct.pack("<I", len(recs)))
@@ -165,7 +163,7 @@ data = gzip.compress(buf.getvalue(), 9)
 open(OUT, "wb").write(data)
 print(f"{len(buf.getvalue()) / 1e6:.2f} MB -> {len(data) / 1e3:.0f} kB")
 
-# a picture of the result, for looking at
+# a picture of the result, for looking at (a quarter of the size for the whole city)
 pic = np.zeros((GH, GW, 3), dtype=np.uint8)
 pic[:] = (225, 222, 205)
 g = (cells >> 4) & 3
@@ -177,5 +175,9 @@ rc = (cells >> 1) & 3
 pic[rc == 1] = (150, 150, 150); pic[rc >= 2] = (80, 80, 80); pic[(cells >> 3) & 1 == 1] = (200, 120, 40)
 im = Image.fromarray(pic); dr = ImageDraw.Draw(im)
 for x, z, w, d, a, h, k in recs:
-    dr.rectangle([x / 4 + ISLE_X - w / 16, z / 4 + ISLE_Z - d / 16, x / 4 + ISLE_X + w / 16, z / 4 + ISLE_Z + d / 16], fill=(190, 80, 60) if k & 1 == 0 else (250, 230, 0))
-im.save("/private/tmp/claude-501/-Users-macik/3cf9040c-d8a1-43f6-8e39-2ddd66f438e3/scratchpad/baked.png")
+    X, Z = x / 4 - GX0, z / 4 - GZ0
+    dr.rectangle([X - w / 16, Z - d / 16, X + w / 16, Z + d / 16], fill=(190, 80, 60) if k & 1 == 0 else (250, 230, 0))
+if FULL:
+    im = im.resize((GW // 4, GH // 4), Image.LANCZOS)
+im.save(os.path.join(CACHE, "baked.png"))
+print("picture:", os.path.join(CACHE, "baked.png"))

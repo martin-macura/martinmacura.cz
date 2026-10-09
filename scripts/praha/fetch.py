@@ -5,14 +5,12 @@ OpenStreetMap data: (c) OpenStreetMap contributors, ODbL. Terrain: Mapzen/AWS te
 Run once; later steps read the cache, so the network is not needed again."""
 import json, math, os, sys, time, urllib.parse, urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE = os.path.join(HERE, ".cache")
+from common import CACHE, FULL, S, N, W, E
+
 os.makedirs(CACHE, exist_ok=True)
 UA = "martinmacura.cz-praha-bake/1.0 (personal site; https://martinmacura.cz)"
 ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]
 
-# a little wider than the world, so that the anchor can still move a bit
-S, N, W, E = 50.0580, 50.1150, 14.3500, 14.4750
 
 
 def overpass(name, query):
@@ -43,19 +41,35 @@ def bbox(s, n, w, e):
 
 
 HW = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|pedestrian|service"
-overpass("water", f'[out:json][timeout:250];(way["natural"="water"]{bbox(S, N, W, E)};relation["natural"="water"]{bbox(S, N, W, E)};way["waterway"="riverbank"]{bbox(S, N, W, E)};relation["waterway"="riverbank"]{bbox(S, N, W, E)};way["waterway"~"^(river|canal)$"]{bbox(S, N, W, E)};);out geom;')
-overpass("highways", f'[out:json][timeout:250];way["highway"~"^({HW})$"]{bbox(S, N, W, E)};out geom;')
-overpass("green", f'[out:json][timeout:250];(way["leisure"~"^(park|garden|pitch|golf_course|recreation_ground)$"]{bbox(S, N, W, E)};relation["leisure"~"^(park|garden)$"]{bbox(S, N, W, E)};way["landuse"~"^(forest|grass|meadow|recreation_ground|cemetery|allotments|village_green|vineyard|orchard)$"]{bbox(S, N, W, E)};relation["landuse"~"^(forest|grass|meadow|cemetery)$"]{bbox(S, N, W, E)};way["natural"~"^(wood|scrub|grassland)$"]{bbox(S, N, W, E)};relation["natural"="wood"]{bbox(S, N, W, E)};);out geom;')
-overpass("rail", f'[out:json][timeout:250];(way["railway"~"^(rail|light_rail|subway|tram)$"]{bbox(S, N, W, E)};node["railway"~"^(station|halt|level_crossing)$"]{bbox(S, N, W, E)};);out geom;')
-# buildings in tiles, to stay inside the server's limits
-TX, TY = 4, 3
-for i in range(TX):
-    for j in range(TY):
-        s = S + (N - S) * j / TY
-        n = S + (N - S) * (j + 1) / TY
-        w = W + (E - W) * i / TX
-        e = W + (E - W) * (i + 1) / TX
-        overpass(f"buildings-{i}-{j}", f'[out:json][timeout:250];(way["building"]{bbox(s, n, w, e)};relation["building"]{bbox(s, n, w, e)};);out geom;')
+Q = {
+    "water": lambda b: f'[out:json][timeout:250];(way["natural"="water"]{b};relation["natural"="water"]{b};way["waterway"="riverbank"]{b};relation["waterway"="riverbank"]{b};way["waterway"~"^(river|canal)$"]{b};);out geom;',
+    "highways": lambda b: f'[out:json][timeout:250];way["highway"~"^({HW})$"]{b};out geom;',
+    "green": lambda b: f'[out:json][timeout:250];(way["leisure"~"^(park|garden|pitch|golf_course|recreation_ground)$"]{b};relation["leisure"~"^(park|garden)$"]{b};way["landuse"~"^(forest|grass|meadow|recreation_ground|cemetery|allotments|village_green|vineyard|orchard)$"]{b};relation["landuse"~"^(forest|grass|meadow|cemetery)$"]{b};way["natural"~"^(wood|scrub|grassland)$"]{b};relation["natural"="wood"]{b};);out geom;',
+    "rail": lambda b: f'[out:json][timeout:250];(way["railway"~"^(rail|light_rail|subway|tram)$"]{b};node["railway"~"^(station|halt|level_crossing)$"]{b};);out geom;',
+    "buildings": lambda b: f'[out:json][timeout:250];(way["building"]{b};relation["building"]{b};);out geom;',
+}
+
+
+def tiled(layer, tx, ty, name=None):
+    """the layer in tx x ty pieces, to stay inside the server's limits"""
+    for i in range(tx):
+        for j in range(ty):
+            s = S + (N - S) * j / ty
+            n = S + (N - S) * (j + 1) / ty
+            w = W + (E - W) * i / tx
+            e = W + (E - W) * (i + 1) / tx
+            overpass(f"{name or layer}-{i}-{j}", Q[layer](bbox(s, n, w, e)))
+
+
+if FULL:
+    # the whole city: 35 x 27 km, in tiles of 5-7 km (the layers) and 3.5 km (the 250,000 buildings); a few minutes of waiting
+    for layer in ("water", "highways", "green"):
+        tiled(layer, 5, 4)
+    tiled("buildings", 10, 8)
+else:
+    for layer in ("water", "highways", "green", "rail"):
+        overpass(layer, Q[layer](bbox(S, N, W, E)))
+    tiled("buildings", 4, 3)  # buildings in tiles
 
 
 # terrain: terrarium tiles at zoom 13

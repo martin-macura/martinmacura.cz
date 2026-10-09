@@ -49,8 +49,10 @@ const CHARLES_LEN = Math.hypot(CHARLES.to[0] - CHARLES.from[0], CHARLES.to[1] - 
 const shade = (color: number, f: number) => (Math.round(((color >> 16) & 255) * f) << 16) | (Math.round(((color >> 8) & 255) * f) << 8) | Math.round((color & 255) * f);
 
 interface Data {
-	gw: number;
-	gh: number;
+gw: number;
+gh: number;
+x0: number; // where the first cell is in the world
+z0: number;
 	cells: Uint8Array;
 	steps: Uint8Array;
 	houses: Int16Array; // x, z, w, d, angle, metres, kind
@@ -66,15 +68,20 @@ export async function loadPraha(url: string): Promise<World> {
 
 function makePraha(buf: ArrayBuffer): World {
 	const dv = new DataView(buf);
-	const gw = dv.getUint16(0, true);
-	const gh = dv.getUint16(2, true);
-	const hx = gw / 2; // the baked map reaches further than the island, which shows the middle of it
-	const hz = gh / 2;
-	const isleX = 480;
-	const isleZ = 416;
-	const cells = new Uint8Array(buf, 4, gw * gh).slice();
-	const steps = new Uint8Array(buf, 4 + gw * gh, (gw / 2) * (gh / 2));
-	const at = 4 + gw * gh + (gw / 2) * (gh / 2);
+	// a map of the whole city says where its grid lies (and starts with 0); the older one is centred on (0, 0)
+	const placed = dv.getUint16(0, true) === 0;
+	const o = placed ? 2 : 0;
+	const gw = dv.getUint16(o, true);
+	const gh = dv.getUint16(o + 2, true);
+	const x0 = placed ? dv.getInt16(o + 4, true) : -gw / 2;
+	const z0 = placed ? dv.getInt16(o + 6, true) : -gh / 2;
+	const head = o + (placed ? 8 : 4);
+	// the older map reaches further than the island, which shows the middle of it
+	const isleX = placed ? Math.ceil(Math.max(-x0, x0 + gw) / CH) * CH : 480;
+	const isleZ = placed ? Math.ceil(Math.max(-z0, z0 + gh) / CH) * CH : 416;
+	const cells = new Uint8Array(buf, head, gw * gh); // the buffer is ours to change
+	const steps = new Uint8Array(buf, head + gw * gh, (gw / 2) * (gh / 2));
+	const at = head + gw * gh + (gw / 2) * (gh / 2);
 	const count = dv.getUint32(at, true);
 	const houses = new Int16Array(count * 7);
 	const byChunk = new Map<number, number[]>();
@@ -88,18 +95,18 @@ function makePraha(buf: ArrayBuffer): World {
 		if (list) list.push(i);
 		else byChunk.set(key, [i]);
 	}
-	const data: Data = { gw, gh, cells, steps, houses, byChunk };
+	const data: Data = { gw, gh, x0, z0, cells, steps, houses, byChunk };
 
 	const cellAt = (x: number, z: number) => {
-		const ix = Math.floor(x) + hx;
-		const iz = Math.floor(z) + hz;
+		const ix = Math.floor(x) - x0;
+		const iz = Math.floor(z) - z0;
 		return ix >= 0 && iz >= 0 && ix < gw && iz < gh ? data.cells[iz * gw + ix] : 0;
 	};
 	const isWater = (x: number, z: number) => (cellAt(x, z) & 1) === 1;
 	const roadAt = (x: number, z: number) => ((cellAt(x, z) >> 1) & 3) > 0;
 	const stepAt = (x: number, z: number) => {
-		const ix = Math.floor(x + hx) >> 1;
-		const iz = Math.floor(z + hz) >> 1;
+		const ix = (Math.floor(x) - x0) >> 1;
+		const iz = (Math.floor(z) - z0) >> 1;
 		return ix >= 0 && iz >= 0 && ix < gw / 2 && iz < gh / 2 ? data.steps[iz * (gw / 2) + ix] : 0;
 	};
 	const hillHeight = (x: number, z: number) => stepAt(x, z) * STEP;
@@ -108,8 +115,8 @@ function makePraha(buf: ArrayBuffer): World {
 		for (const [cx, cz, r] of carves) {
 			for (let iz = Math.floor(cz - r); iz <= Math.ceil(cz + r); iz++) {
 				for (let ix = Math.floor(cx - r); ix <= Math.ceil(cx + r); ix++) {
-					const gx = ix + hx;
-					const gz = iz + hz;
+					const gx = ix - x0;
+					const gz = iz - z0;
 					if (gx < 0 || gz < 0 || gx >= gw || gz >= gh) continue;
 					if (Math.hypot(ix + 0.5 - cx, iz + 0.5 - cz) <= r) data.cells[gz * gw + gx] &= ~1;
 				}
@@ -396,6 +403,7 @@ function makePraha(buf: ArrayBuffer): World {
 		isleX,
 		isleZ,
 		fit: { x: 40, z: -10, hx: 160, hz: 100 },
+		kMax: placed ? 6 : undefined,
 		layout: PRAHA_LAYOUT,
 		ground: 0xb3ab97,
 		isWater,

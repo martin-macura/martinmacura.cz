@@ -240,7 +240,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		const fit = extent(fitCorners);
 		isle = extent(isleCorners);
 		baseHalf = Math.max((fit.maxY - fit.minY) / 2, (fit.maxX - fit.minX) / 2 / aspect) * 1.04;
-		kMax = 4;
+		kMax = world.kMax ?? 4;
 		if (portrait !== wantPortrait) {
 			portrait = wantPortrait;
 			view.cx = (fit.minX + fit.maxX) / 2;

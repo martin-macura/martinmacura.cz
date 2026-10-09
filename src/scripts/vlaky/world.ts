@@ -12,6 +12,8 @@ export interface World {
 	isleZ: number;
 	/** the part the first view shows: its middle and half its size */
 	fit: { x: number; z: number; hx: number; hz: number };
+	/** how far the view may zoom out, relative to the first view; 4 when absent */
+	kMax?: number;
 	/** where the tracks go; the default layout when absent */
 	layout?: Layout;
 	/** the colour of the ground between things; grass when absent */
