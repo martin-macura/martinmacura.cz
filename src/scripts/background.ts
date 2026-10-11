@@ -507,8 +507,8 @@ function buildProduct() {
 		ctx.fillStyle = "#f2f2f2";
 		ctx.font = '8px "Press Start 2P", monospace';
 		ctx.textBaseline = "top";
-		ctx.fillText("Martin", 8, 10);
-		ctx.fillText("Macura", 8, 20);
+		ctx.fillText("Márty", 8, 10);
+		ctx.fillText("smrdí", 8, 20);
 		// the motto and the links, as bars
 		ctx.fillStyle = "#8a8a8a";
 		ctx.fillRect(8, 33, 16, 1);

@@ -2,7 +2,7 @@
 import Icons from "../components/Icons.astro";
 import { fontFaces } from "../lib/pixel-font";
 
-const name = ["Martin", "Macura"];
+const name = ["Márty", "smrdí"];
 
 const links = [
 	{
@@ -27,14 +27,14 @@ const links = [
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<meta name="color-scheme" content="dark" />
 		<Icons />
-		<title>Martin Macura</title>
+		<title>Márty smrdí</title>
 		<meta name="description" content="Martin Macura, a guy from Prague" />
 		<style is:inline set:html={fontFaces}></style>
 	</head>
 	<body>
 		<canvas class="bg" aria-hidden="true"></canvas>
 		<main>
-			<h1 aria-label="Martin Macura">
+			<h1 aria-label="Márty smrdí">
 				{
 					name.map((word) => (
 						<span class="line" aria-hidden="true">
@@ -135,12 +135,12 @@ const links = [
 		text-align: center;
 	}
 
-	/* Name: two lines of six letters, so both are exactly 6em wide. The font is 8 pixels to the em, so the size
+	/* Name: two lines of five letters, so both are exactly 5em wide. The font is 8 pixels to the em, so the size
 	   snaps to a multiple of --snap (a whole number of screen pixels per font pixel) where the browser knows
 	   round(). The letters hop, see the script below. */
 	h1 {
-		font-size: min(13.5cqw, 23svh);
-		font-size: round(down, min(13.5cqw, 23svh), var(--snap));
+		font-size: min(16.2cqw, 23svh);
+		font-size: round(down, min(16.2cqw, 23svh), var(--snap));
 		line-height: 1.15;
 	}
 
@@ -163,8 +163,8 @@ const links = [
 		}
 
 		h1 {
-			font-size: min(13.5cqw, 17svh);
-			font-size: round(down, min(13.5cqw, 17svh), var(--snap));
+			font-size: min(16.2cqw, 17svh);
+			font-size: round(down, min(16.2cqw, 17svh), var(--snap));
 		}
 	}
 
