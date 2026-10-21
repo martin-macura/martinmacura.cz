@@ -1,17 +1,29 @@
-// The trams of Prague by the real timetable (scripts/praha/bake_trams.py -> praha-tram.dat): every tram that runs
-// now, by the clock of Prague, is where the timetable puts it, on the line it runs on. Nothing is live: it is the plan,
-// so a late tram in the street is on time here. The rails and the stops are drawn into the chunks.
-// Timetable: PID / ROPID (CC BY 4.0).
-import { InstancedMesh, MeshLambertMaterial, Object3D, type Scene } from "three";
+// The trams and the trains of Prague by the real timetable (scripts/praha/bake_trams.py -> praha-tram.dat and
+// praha-rail.dat): every one that runs now, by the clock of Prague, is where the timetable puts it, on the line it
+// runs on. Nothing is live: it is the plan, so a late tram in the street is on time here. The tracks, the stops and
+// the stations are drawn into the chunks. Timetable: PID / ROPID (CC BY 4.0).
+import { CanvasTexture, InstancedMesh, MeshLambertMaterial, NearestFilter, Object3D, type Scene, Sprite, SpriteMaterial } from "three";
 import { inChunk, walkSegment } from "./praha-roads";
-import { glass, unit } from "./util";
+import { COLORS, glass, unit } from "./util";
 import type { Extras, Focus } from "./world";
 
 const CH = 32;
 const M = 6; // metres in a unit
-const SECTIONS = 3;
-const SECTION = 1.7; // units
-const MAX = 900;
+
+/** what runs on the lines, and what its track looks like */
+export interface LineStyle {
+	rail: boolean; // a railway (ballast, sleepers, stations with names) or a tramway (rails in the street, stops)
+	sections: number;
+	section: number; // units
+	width: number;
+	height: number;
+	body: number;
+	roof: number;
+	max: number; // at most this many at once
+}
+export const TRAM: LineStyle = { rail: false, sections: 3, section: 1.7, width: 0.46, height: 0.5, body: 0xd8322a, roof: 0xf2ead8, max: 900 };
+/** a CityElefant: four double-deck cars of about 20 m */
+export const TRAIN: LineStyle = { rail: true, sections: 4, section: 3.3, width: 0.62, height: 0.78, body: 0x2f62c8, roof: 0xf2f2f2, max: 300 };
 
 export interface TramData {
 	routes: string[];
@@ -21,6 +33,8 @@ export interface TramData {
 	trackByChunk: Map<number, number[]>;
 	stops: { x: number; z: number; heading: number }[];
 	stopsByChunk: Map<number, number[]>;
+	/** the names of the stations */
+	labels: { x: number; z: number; name: string }[];
 	/** shape s has points sx/sz/sm[shapeStart[s] .. shapeStart[s + 1]); sm is metres along it */
 	shapeStart: Uint32Array;
 	sx: Float32Array;
@@ -103,6 +117,19 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 		}
 	}
 
+	const labels: TramData["labels"] = [];
+	{
+		let x = 0;
+		let z = 0;
+		for (let n = uv(); n > 0; n--) {
+			x += sv();
+			z += sv();
+			const len = uv();
+			labels.push({ x: x / 4, z: z / 4, name: String.fromCharCode(...b.subarray(o, o + len)) });
+			o += len;
+		}
+	}
+
 	const ns = uv();
 	const shapeStart = new Uint32Array(ns + 1);
 	const xs: number[] = [];
@@ -160,6 +187,7 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 		trackByChunk,
 		stops,
 		stopsByChunk,
+		labels,
 		shapeStart,
 		sx: Float32Array.from(xs),
 		sz: Float32Array.from(zs),
@@ -172,40 +200,111 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 	};
 }
 
-/** the rails and the stops of chunk (cx, cz) */
-export function tramBoxes(
+/**
+ * the tracks and the stops of chunk (cx, cz). A tramway is a pair of rails in the street; a railway is ballast with
+ * sleepers and rails, a steel deck over the water, and a station is a platform on each side of the track. Far away
+ * only the ballast is drawn, so that the railway still shows through the whole city.
+ */
+export function lineBoxes(
 	data: TramData,
+	style: LineStyle,
 	cx: number,
 	cz: number,
+	far: boolean,
 	ground: (x: number, z: number) => number,
+	isWater: (x: number, z: number) => boolean,
 	skip: (x: number, z: number) => boolean,
 	add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void,
 ) {
 	const { tx, tz } = data;
+	if (far && !style.rail) return;
+	// a tramway stops at the water (the bridge carries the street); a railway crosses it on a deck of its own
+	const tramSkip = (x: number, z: number) => isWater(x, z) || skip(x, z);
+	const railGround = (x: number, z: number) => (isWater(x, z) ? 0.6 : ground(x, z));
 	for (const i of data.trackByChunk.get(cx * 1000 + cz) ?? []) {
 		const dx = tx[i + 1] - tx[i];
 		const dz = tz[i + 1] - tz[i];
 		const len = Math.hypot(dx, dz) || 1;
-		// the bed, then a rail on each side of it
-		walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, ground, skip, (x, z, l, h, ry) => add(l + 0.05, 0.05, 0.8, 0x4a4743, x, h + 0.05, z, ry));
-		for (const side of [-0.24, 0.24]) {
-			const ox = (-dz / len) * side;
-			const oz = (dx / len) * side;
-			walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, ground, skip, (x, z, l, h, ry) => add(l + 0.05, 0.03, 0.06, 0x9aa3ad, x, h + 0.09, z, ry));
+		const side = (o: number) => [(-dz / len) * o, (dx / len) * o];
+		if (!style.rail) {
+			walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, ground, tramSkip, (x, z, l, h, ry) => add(l + 0.05, 0.05, 0.8, 0x4a4743, x, h + 0.05, z, ry));
+			for (const o of [-0.24, 0.24]) {
+				const [ox, oz] = side(o);
+				walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, ground, tramSkip, (x, z, l, h, ry) => add(l + 0.05, 0.03, 0.06, 0x9aa3ad, x, h + 0.09, z, ry));
+			}
+			continue;
+		}
+		walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, railGround, skip, (x, z, l, h, ry) => {
+			if (h === 0.6) add(l + 0.05, 0.25, 1.8, COLORS.steel, x, h - 0.1, z, ry); // the deck of a bridge
+			else if (far) add(l + 0.05, 0.14, 2.8, 0x8f9aa8, x, h + 0.07, z, ry); // from afar a wide steel band, so that it reads among the dark streets
+			else add(l + 0.05, 0.12, 1.6, COLORS.ballast, x, h + 0.06, z, ry);
+			if (far) return;
+			// sleepers across, about every 0.7 units
+			const n = Math.max(1, Math.round(l / 0.7));
+			const ux = Math.cos(-ry);
+			const uz = Math.sin(-ry);
+			for (let k = 0; k < n; k++) {
+				const t = (k + 0.5) * (l / n) - l / 2;
+				add(0.16, 0.05, 1.25, COLORS.wood, x + ux * t, h + 0.14, z + uz * t, ry);
+			}
+		});
+		if (far) continue;
+		for (const o of [-0.42, 0.42]) {
+			const [ox, oz] = side(o);
+			walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, railGround, skip, (x, z, l, h, ry) => add(l + 0.05, 0.09, 0.09, COLORS.steel, x, h + 0.2, z, ry));
 		}
 	}
+	if (far) return;
 	for (const i of data.stopsByChunk.get(cx * 1000 + cz) ?? []) {
 		const s = data.stops[i];
 		if (!inChunk(s.x, s.z, cx, cz) || skip(s.x, s.z)) continue;
-		const h = ground(s.x, s.z);
 		const ry = -s.heading;
 		const c = Math.cos(s.heading);
 		const sn = Math.sin(s.heading);
-		// a platform with a shelter on it
-		add(2, 0.12, 0.45, 0xb9b09c, s.x, h + 0.08, s.z, ry);
-		for (const t of [-0.35, 0.35]) add(0.06, 0.55, 0.06, 0x14161c, s.x + c * t, h + 0.42, s.z + sn * t, ry);
-		add(0.95, 0.06, 0.4, 0xc23b2f, s.x, h + 0.72, s.z, ry);
+		if (!style.rail) {
+			// a platform with a shelter on it
+			const h = ground(s.x, s.z);
+			add(2, 0.12, 0.45, 0xb9b09c, s.x, h + 0.08, s.z, ry);
+			for (const t of [-0.35, 0.35]) add(0.06, 0.55, 0.06, 0x14161c, s.x + c * t, h + 0.42, s.z + sn * t, ry);
+			add(0.95, 0.06, 0.4, 0xc23b2f, s.x, h + 0.72, s.z, ry);
+			continue;
+		}
+		// a station: a platform on each side, with a yellow edge and a roof over its middle
+		for (const o of [-1.55, 1.55]) {
+			const px = s.x - sn * o;
+			const pz = s.z + c * o;
+			const h = ground(px, pz);
+			add(14, 0.35, 1.3, COLORS.platform, px, h + 0.17, pz, ry);
+			add(14, 0.36, 0.1, COLORS.yellow, px - sn * -Math.sign(o) * 0.6, h + 0.18, pz + c * -Math.sign(o) * 0.6, ry);
+			for (const t of [-3, 0, 3]) add(0.1, 1.2, 0.1, COLORS.dark, px + c * t + sn * Math.sign(o) * 0.3, h + 0.9, pz + sn * t - c * Math.sign(o) * 0.3, ry);
+			add(7.5, 0.1, 1.1, 0x5a6470, px, h + 1.5, pz, ry);
+		}
 	}
+}
+
+/** a sign with the name of a station, as wide as the name needs */
+function labelSprite(text: string) {
+	const c = document.createElement("canvas");
+	const w = Math.max(64, text.length * 8 + 8);
+	c.width = w;
+	c.height = 16;
+	const g = c.getContext("2d")!;
+	g.fillStyle = "#f2f2f2";
+	g.fillRect(0, 0, w, 16);
+	g.fillStyle = "#0c0c0c";
+	g.fillRect(0, 0, w, 1);
+	g.fillRect(0, 15, w, 1);
+	g.font = '8px "Press Start 2P", monospace';
+	g.textBaseline = "middle";
+	g.textAlign = "center";
+	g.fillText(text, w / 2, 9);
+	const tex = new CanvasTexture(c);
+	tex.magFilter = NearestFilter;
+	tex.minFilter = NearestFilter;
+	const sprite = new Sprite(new SpriteMaterial({ map: tex, depthTest: false }));
+	sprite.renderOrder = 10; // signs stay readable even behind a building
+	sprite.scale.set((w / 16) * 2.2, 2.2, 1);
+	return sprite;
 }
 
 /** the seconds since midnight in Prague, and what kind of day it is there (1 working day, 2 Saturday, 4 Sunday) */
@@ -219,7 +318,7 @@ function prague(now: number) {
 	return { secs, today: KIND[parts.weekday] ?? 1, yesterday: BEFORE[parts.weekday] ?? 1 };
 }
 
-export function createTrams(scene: Scene, data: TramData, groundAt: (x: number, z: number) => number): Extras {
+export function createTrams(scene: Scene, data: TramData, style: LineStyle, groundAt: (x: number, z: number) => number): Extras {
 	const { tripStart, tripPattern, tripMask, patterns, shapeStart, sx, sz, sm } = data;
 
 	// what runs now: looked up again every few seconds; a trip is [start, start + its length]
@@ -276,9 +375,10 @@ export function createTrams(scene: Scene, data: TramData, groundAt: (x: number, 
 		at.dz = dz / l;
 	}
 
-	const bodies = new InstancedMesh(unit, new MeshLambertMaterial({ color: 0xd8322a }), MAX * SECTIONS);
-	const windows = new InstancedMesh(unit, glass, MAX * SECTIONS);
-	const roofs = new InstancedMesh(unit, new MeshLambertMaterial({ color: 0xf2ead8 }), MAX * SECTIONS);
+	const { sections, section, width, height, max } = style;
+	const bodies = new InstancedMesh(unit, new MeshLambertMaterial({ color: style.body }), max * sections);
+	const windows = new InstancedMesh(unit, glass, max * sections);
+	const roofs = new InstancedMesh(unit, new MeshLambertMaterial({ color: style.roof }), max * sections);
 	for (const m of [bodies, windows, roofs]) {
 		m.frustumCulled = false;
 		m.userData.dynamic = true;
@@ -287,6 +387,15 @@ export function createTrams(scene: Scene, data: TramData, groundAt: (x: number, 
 	}
 	const dummy = new Object3D();
 	let focus: Focus | null = null;
+
+	// the names of the stations, shown near the view
+	const signs = data.labels.map((l) => {
+		const sprite = labelSprite(l.name);
+		sprite.position.set(l.x, groundAt(l.x, l.z) + 3.2, l.z);
+		sprite.visible = false;
+		scene.add(sprite);
+		return sprite;
+	});
 
 	return {
 		simulate(_dt, f) {
@@ -301,30 +410,37 @@ export function createTrams(scene: Scene, data: TramData, groundAt: (x: number, 
 			}
 			const { secs } = prague(now);
 			const reach = focus.r * 1.3;
+			for (const sign of signs) sign.visible = !focus.far && Math.abs(sign.position.x - focus.x) < reach && Math.abs(sign.position.z - focus.z) < reach;
 			let n = 0;
 			for (const { trip, offset } of active) {
-				if (n >= MAX * SECTIONS) break;
+				if (n >= max * sections) break;
 				const p = patterns[tripPattern[trip]];
 				const tau = secs + offset - tripStart[trip];
 				if (tau < 0 || tau > p.arr[p.arr.length - 1]) continue;
 				const front = metresAt(p, tau);
+				// a regional train out of the map, where its shape was cut off, is not drawn
+				const first = sm[shapeStart[p.shape]];
+				const last = sm[shapeStart[p.shape + 1] - 1];
+				if (front < first || front > last) continue;
 				onShape(p.shape, front);
 				if (Math.abs(at.x - focus.x) > reach || Math.abs(at.z - focus.z) > reach) continue;
-				for (let k = 0; k < SECTIONS; k++) {
-					onShape(p.shape, Math.max(0, front - (k + 0.5) * SECTION * M));
-					const y = groundAt(at.x, at.z);
+				for (let k = 0; k < sections; k++) {
+					const m = Math.max(first, front - (k + 0.5) * section * M);
+					onShape(p.shape, m);
+					// over the water a train runs on the deck of its bridge
+					const y = groundAt(at.x, at.z) + (style.rail ? 0.2 : 0);
 					const yaw = Math.atan2(at.dx, at.dz);
 					dummy.rotation.set(0, yaw, 0);
-					dummy.position.set(at.x, y + 0.3, at.z);
-					dummy.scale.set(0.46, 0.5, SECTION - 0.08);
+					dummy.position.set(at.x, y + 0.05 + height / 2, at.z);
+					dummy.scale.set(width, height, section - 0.08);
 					dummy.updateMatrix();
 					bodies.setMatrixAt(n, dummy.matrix);
-					dummy.position.y = y + 0.4;
-					dummy.scale.set(0.48, 0.16, SECTION - 0.3);
+					dummy.position.y = y + 0.05 + height * 0.62;
+					dummy.scale.set(width + 0.02, height * 0.3, section - 0.3);
 					dummy.updateMatrix();
 					windows.setMatrixAt(n, dummy.matrix);
-					dummy.position.y = y + 0.59;
-					dummy.scale.set(0.42, 0.08, SECTION - 0.2);
+					dummy.position.y = y + 0.05 + height + 0.04;
+					dummy.scale.set(width - 0.04, 0.08, section - 0.2);
 					dummy.updateMatrix();
 					roofs.setMatrixAt(n, dummy.matrix);
 					n++;

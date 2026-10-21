@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Step 2c: the trams of Prague by the timetable: public/vlaky/praha-tram.dat (gzip).
+"""Step 2c: the trams and the trains of Prague by the timetable: public/vlaky/praha-tram.dat and praha-rail.dat (gzip).
+
+  python3 bake_trams.py        the trams (route_type 0)
+  python3 bake_trams.py rail   the trains (route_type 2): the shapes are cut to the map, a train stands at least
+                               25 s at a station, the stations lie on the track and every one gets its name
 
 Reads the PID timetable (GTFS) unzipped into .cache-full/gtfs (or .cache/gtfs), from https://data.pid.cz/PID_GTFS.zip.
 The feed covers two weeks; the scene must work long after that, so one real day of the feed is baked for each kind of
@@ -9,6 +13,7 @@ layout of the decompressed data, all numbers LEB128 varints (signed ones zigzagg
   routes count, then per route: its name length, the name (ascii)
   tracks count, then per track: points count, then dx, dz (quarter units) from the last point; the rails, each street once
   stops count, then per stop: dx, dz (quarter units) from the last stop, the heading (0..63 = 0..2 pi)
+  labels count, then per label: dx, dz (quarter units) from the last label, name length, the name (ascii, capitals)
   shapes count, then per shape: points count, then dx, dz (quarter units), d metres from the last point
   patterns count, then per pattern: route, shape, stops count, then per stop: arrival (s after the start), dwell (s), metres along the shape
   trips count, then per trip, sorted by start: start - previous start (s after midnight, can pass 24 h), pattern, day mask (1 working day, 2 Saturday, 4 Sunday)
@@ -18,8 +23,10 @@ from common import *
 
 sys.setrecursionlimit(100000)
 
+RAIL = len(sys.argv) > 1 and sys.argv[1] == "rail"
 GTFS = os.path.join(CACHE, "gtfs")
-OUT = os.path.join(HERE, "..", "..", "public", "vlaky", "praha-tram.dat")
+OUT = os.path.join(HERE, "..", "..", "public", "vlaky", "praha-rail.dat" if RAIL else "praha-tram.dat")
+MIN_DWELL = 25 if RAIL else 0
 rows = lambda name: csv.DictReader(open(os.path.join(GTFS, name), encoding="utf-8-sig", newline=""))
 secs = lambda t: (lambda h, m, s: h * 3600 + m * 60 + s)(*map(int, t.split(":")))
 
@@ -50,19 +57,22 @@ chosen = [pick({1, 2, 3}), pick({5}), pick({6})]
 print("days:", *chosen)
 services = [running(d) for d in chosen]
 
-# --- the tram lines, their trips, their stops and their shapes
-routes = {r["route_id"]: r["route_short_name"] for r in rows("routes.txt") if r["route_type"] == "0"}
+# --- the lines, their trips, their stops and their shapes
+routes = {r["route_id"]: r["route_short_name"] for r in rows("routes.txt") if r["route_type"] == ("2" if RAIL else "0")}
 trips = {}
 for r in rows("trips.txt"):
     if r["route_id"] in routes:
         mask = sum(1 << k for k in range(3) if r["service_id"] in services[k])
         if mask:
             trips[r["trip_id"]] = (r["route_id"], r["shape_id"], mask)
-print(len(routes), "tram lines,", len(trips), "trips")
+print(len(routes), "lines,", len(trips), "trips")
 
 times = {}
 for r in rows("stop_times.txt"):
     if r["trip_id"] in trips:
+        # a stop where nobody gets on or off (a junction, a passing point) is only a time on the way
+        if r["pickup_type"] == "1" and r["drop_off_type"] == "1":
+            continue
         times.setdefault(r["trip_id"], []).append((int(r["stop_sequence"]), secs(r["arrival_time"]), secs(r["departure_time"]), float(r["shape_dist_traveled"] or 0) * 1000, r["stop_id"]))
 
 want = {s for _, s, _ in trips.values()}
@@ -70,7 +80,8 @@ shapes = {}
 for r in rows("shapes.txt"):
     if r["shape_id"] in want:
         shapes.setdefault(r["shape_id"], []).append((int(r["shape_pt_sequence"]), float(r["shape_pt_lat"]), float(r["shape_pt_lon"]), float(r["shape_dist_traveled"] or 0) * 1000))
-stop_pos = {r["stop_id"]: project(float(r["stop_lat"]), float(r["stop_lon"])) for r in rows("stops.txt")}
+stop_rows = {r["stop_id"]: r for r in rows("stops.txt")}
+stop_pos = {k: project(float(r["stop_lat"]), float(r["stop_lon"])) for k, r in stop_rows.items()}
 
 q = lambda v: int(round(v * 4))
 
@@ -93,9 +104,13 @@ def simplify(p, tol=0.12):
 shape_ids = sorted(shapes)
 shape_idx = {s: i for i, s in enumerate(shape_ids)}
 shape_pts = []
+inside = lambda x, z, pad=10: GX0 - pad < x < GX0 + GW + pad and GZ0 - pad < z < GZ0 + GH + pad
 for s in shape_ids:
-    pts_ = sorted(shapes[s])
-    shape_pts.append(simplify([(*project(lat, lon), m) for _, lat, lon, m in pts_]))
+    pts_ = [(*project(lat, lon), m) for _, lat, lon, m in sorted(shapes[s])]
+    # a regional line runs far out of the map: keep the part from where it first enters to where it last leaves
+    ins = [i for i, (x, z, _) in enumerate(pts_) if inside(x, z)]
+    pts_ = pts_[max(0, ins[0] - 1) : ins[-1] + 2] if ins else pts_[:2]
+    shape_pts.append(simplify(pts_))
 
 # --- patterns: trips that share the shape and the times between the stops
 route_ids = sorted(routes, key=lambda r: (len(routes[r]), routes[r]))
@@ -107,8 +122,29 @@ def heading_at(pts_, m):
             return math.atan2(pts_[i][1] - pts_[i - 1][1], pts_[i][0] - pts_[i - 1][0])
     return 0.0
 
+def point_at(pts_, m):
+    """where the shape is at metres m, or None off the part of it that was kept"""
+    if not pts_ or m < pts_[0][2] or m > pts_[-1][2]:
+        return None
+    for i in range(1, len(pts_)):
+        if pts_[i][2] >= m:
+            (x1, z1, m1), (x2, z2, m2) = pts_[i - 1], pts_[i]
+            f = (m - m1) / (m2 - m1) if m2 > m1 else 0
+            return x1 + (x2 - x1) * f, z1 + (z2 - z1) * f
+    return None
+
+def stand(st):
+    """a train stands a while at every station on the way, the time taken from the run after it"""
+    out = list(st)
+    for i in range(1, len(out) - 1):
+        seq, a, d, m, stop = out[i]
+        if d - a < MIN_DWELL:
+            d = max(d, min(a + MIN_DWELL, out[i + 1][1] - 15))
+            out[i] = (seq, a, d, m, stop)
+    return out
+
 for tid, (rid, sid, mask) in trips.items():
-    st = sorted(times.get(tid, []))
+    st = stand(sorted(times.get(tid, [])))
     if len(st) < 2 or sid not in shape_idx:
         continue
     t0 = st[0][1]
@@ -118,7 +154,16 @@ for tid, (rid, sid, mask) in trips.items():
         patterns.append(key)
         for _, _, _, m, stop in st:
             if stop not in stop_heading and stop in stop_pos:
-                stop_heading[stop] = heading_at(shape_pts[shape_idx[sid]], m)
+                sp = shape_pts[shape_idx[sid]]
+                h = heading_at(sp, m)
+                if RAIL:
+                    # the station on the track where the train stops, not where the map puts the stop; the page lays
+                    # a platform on each side of it
+                    p = point_at(sp, m)
+                    if p is None or not inside(*p, 0):
+                        continue
+                    stop_pos[stop] = p
+                stop_heading[stop] = h
     trip_recs.append((t0, pattern_idx[key], mask))
 trip_recs.sort()
 print(len(patterns), "patterns,", len(trip_recs), "trips baked")
@@ -185,6 +230,23 @@ for s in stops:
     sv(q(x) - lx); sv(q(z) - lz)
     lx, lz = q(x), q(z)
     uv(int(round(stop_heading[s] % (2 * math.pi) / (2 * math.pi) * 64)) % 64)
+# one name per station, in the middle of its platforms (rail only); ascii capitals, like the names of /vlaky
+labels = {}
+if RAIL:
+    import unicodedata
+    for s in stops:
+        name = stop_rows[s]["stop_name"].replace("Praha-", "").replace("Praha ", "")
+        name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().upper().strip()
+        labels.setdefault(name, []).append(stop_pos[s])
+uv(len(labels))
+lx = lz = 0
+for name, ps in sorted(labels.items(), key=lambda kv: kv[0]):
+    x = sum(p[0] for p in ps) / len(ps)
+    z = sum(p[1] for p in ps) / len(ps)
+    sv(q(x) - lx); sv(q(z) - lz)
+    lx, lz = q(x), q(z)
+    b = name.encode("ascii")
+    uv(len(b)); out.extend(b)
 uv(len(shape_pts))
 for pts_ in shape_pts:
     uv(len(pts_))
@@ -205,4 +267,4 @@ for t0, p, mask in trip_recs:
 
 data = gzip.compress(bytes(out), 9)
 open(OUT, "wb").write(data)
-print(f"{len(tracks)} tracks, {len(stops)} stops, {len(shape_pts)} shapes ({sum(map(len, shape_pts))} points); {len(out) / 1e6:.2f} MB -> {len(data) / 1e3:.0f} kB")
+print(f"{len(tracks)} tracks, {len(stops)} stops, {len(labels)} names, {len(shape_pts)} shapes ({sum(map(len, shape_pts))} points); {len(out) / 1e6:.2f} MB -> {len(data) / 1e3:.0f} kB")
