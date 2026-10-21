@@ -61,6 +61,8 @@ export interface World {
 	fit: { x: number; z: number; hx: number; hz: number };
 	/** how far the view may zoom out, relative to the first view; 4 when absent */
 	kMax?: number;
+	/** from this zoom out (relative to the first view) the chunks are built coarser still, see createChunkBuilder; never when absent */
+	coarseK?: number;
 	/** false: the town runs trains of its own (as extras), and our railway is left out */
 	railway?: boolean;
 	/** where the tracks go; the default layout when absent */
@@ -73,7 +75,7 @@ export interface World {
 	/** dry land is carved out around [x, z, radius] */
 	initWater(carves: [number, number, number][]): void;
 	/** `far` builds the coarse version for zoomed-out views: no windows, lamps or small details */
-	createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): (cx: number, cz: number, far: boolean) => Chunk;
+	createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): (cx: number, cz: number, far: boolean, coarse?: boolean) => Chunk;
 	/** the traffic of the town, when it has any of its own */
 	createExtras?(scene: Scene, railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): Extras;
 }

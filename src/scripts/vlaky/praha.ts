@@ -132,7 +132,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	function createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
 		const columnH = columns(railDist);
 
-		return function build(cx: number, cz: number, far: boolean): Chunk {
+		return function build(cx: number, cz: number, far: boolean, coarse = false): Chunk {
 			const x0 = cx * CH;
 			const z0 = cz * CH;
 			const list: Box[] = [];
@@ -140,6 +140,33 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			const add = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry = 0) => list.push([w, h, d, color, x, y, z, ry]);
 			const lamp = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry = 0) => lamps.push([w, h, d, color, x, y, z, ry]);
 			const lines = roads !== null && !far;
+
+			// zoomed far out a block of 4 x 4 cells is one column, as low as the lowest cut of the railway near it, and
+			// there are no trees: a pixel is then about a cell
+			const cs = coarse ? 4 : 2;
+			const blocks = new Float32Array((CH / 4) ** 2).fill(NaN);
+			const blockAt = (bx: number, bz: number) => {
+				let lo = Infinity;
+				let sum = 0;
+				for (const [ox, oz] of [[1, 1], [3, 1], [1, 3], [3, 3]]) {
+					const h = columnH(bx + ox, bz + oz);
+					lo = Math.min(lo, h);
+					sum += h;
+				}
+				return railDist(bx + 2, bz + 2) < 16 ? lo : Math.round(sum / 4 / STEP) * STEP;
+			};
+			const blockH = (x: number, z: number) => {
+				const gx = Math.floor((x - x0) / 4);
+				const gz = Math.floor((z - z0) / 4);
+				const bx = x0 + gx * 4;
+				const bz = z0 + gz * 4;
+				// a house near the edge of the chunk may reach into the next one
+				if (gx < 0 || gz < 0 || gx >= CH / 4 || gz >= CH / 4) return blockAt(bx, bz);
+				const bi = gz * (CH / 4) + gx;
+				if (Number.isNaN(blocks[bi])) blocks[bi] = blockAt(bx, bz);
+				return blocks[bi];
+			};
+			const colH = coarse ? blockH : columnH;
 
 			// --- the ground, row by row, in runs of equal cells
 			type Kind = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -183,7 +210,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 						const x = x0 + ix + 0.5;
 						const z = z0 + iz + 0.5;
 						const c = cellAt(x, z);
-						h = columnH(x, z);
+						h = colH(x, z);
 						const road = (c >> 1) & 3;
 						if (road && c & 1) kind = 6;
 						else if (c & 1) kind = 1;
@@ -210,10 +237,10 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			// the streets as lines, where they are not on a bridge over the water or cut by the railway
 			if (lines) roadBoxes(roads, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
 			// the tram rails and stops, up close
-			if (trams) lineBoxes(trams, TRAM, cx, cz, far, columnH, isWater, (x, z) => !roadOK(x, z), add);
+			if (trams) lineBoxes(trams, TRAM, cx, cz, far, colH, isWater, (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too
-			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, columnH, isWater, () => false, add, bed);
-			if (metro) lineBoxes(metro, METRO, cx, cz, far, columnH, isWater, (x, z) => !metroSeen(x, z), add, metroBed);
+			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, colH, isWater, () => false, add, bed);
+			if (metro) lineBoxes(metro, METRO, cx, cz, far, colH, isWater, (x, z) => !metroSeen(x, z), add, metroBed);
 
 			// the piers of the bridges
 			for (let iz = 0; iz < CH; iz += 2) {
@@ -245,24 +272,24 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				add(0.75, 0.75, 0.75, LEAVES[k % 3], x, y + 0.8, z);
 				if (k % 2) add(0.5, 0.5, 0.5, LEAVES[(k >>> 2) % 3], x, y + 1.35, z);
 			};
-			for (let iz = 0; iz < CH; iz += 2) {
-				for (let ix = 0; ix < CH; ix += 2) {
-					const x = x0 + ix + 1;
-					const z = z0 + iz + 1;
+			for (let iz = 0; iz < CH; iz += cs) {
+				for (let ix = 0; ix < CH; ix += cs) {
+					const x = x0 + ix + cs / 2;
+					const z = z0 + iz + cs / 2;
 					if (Math.abs(x) > isleX - 1 || Math.abs(z) > isleZ - 1) continue;
-					const h = columnH(x, z);
+					const h = colH(x, z);
 					if (h < STEP) continue;
 					const g = (cellAt(x - 0.5, z - 0.5) >> 4) & 3;
 					const k = hash2(Math.floor(x), Math.floor(z));
 					const color = g === 2 ? (k % 3 ? 0x2f6b3c : 0x3a7a44) : g === 1 ? (k % 3 ? 0x5a9a58 : 0x6fae5e) : h > 6 ? 0x9a8d74 : EARTH[k % 2];
 					// contour bands, so that the eye can read the slope
 					const band = [1, 0.94, 0.88][Math.round(h / STEP) % 3];
-					add(2, h, 2, shade(color, band), x, h / 2, z);
+					add(cs, h, cs, shade(color, band), x, h / 2, z);
 				}
 			}
 
 			// --- trees: parks and woods
-			for (let iz = 0; iz < CH; iz++) {
+			for (let iz = 0; iz < (coarse ? 0 : CH); iz++) {
 				for (let ix = 0; ix < CH; ix++) {
 					const x = x0 + ix + 0.5;
 					const z = z0 + iz + 0.5;
@@ -349,7 +376,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				const ang = (data.houses[o + 4] / 256) * Math.PI;
 				const metres = data.houses[o + 5];
 				const kind = data.houses[o + 6];
-				if (!farFromSights(x, z) || onTrack(x, z, w, d, ang)) continue;
+				if ((coarse && w * d < 8) || !farFromSights(x, z) || onTrack(x, z, w, d, ang)) continue;
 				const ca = Math.cos(ang);
 				const sa = Math.sin(ang);
 				let gmax = 0;
@@ -362,7 +389,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 						ok = false;
 						break;
 					}
-					const g = columnH(px, pz);
+					const g = colH(px, pz);
 					gmax = Math.max(gmax, g);
 					gmin = Math.min(gmin, g);
 				}
@@ -525,6 +552,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		isleZ,
 		fit: { x: 40, z: -10, hx: 160, hz: 100 },
 		kMax: placed ? 6 : undefined,
+		coarseK: 3.2,
 		railway: false,
 		ground: 0xb3ab97,
 		isWater,
