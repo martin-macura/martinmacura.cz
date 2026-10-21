@@ -370,6 +370,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		updateChunks(reduced ? Infinity : 5);
 		traffic.pose();
 		cars.pose();
+		if (reduced) extras?.simulate(0, focus); // nothing else moves them along
 		extras?.pose();
 		renderer.render(scene, camera);
 	};

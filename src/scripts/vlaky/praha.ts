@@ -305,7 +305,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			}
 			if (Math.floor((CHARLES.from[0] + CHARLES.to[0]) / 2 / CH) === cx && Math.floor((CHARLES.from[1] + CHARLES.to[1]) / 2 / CH) === cz) charlesBridge(add, lamp);
 
-			// --- the houses, out of the way of the trams: a footprint drawn too big must not swallow their street
+			// --- the houses, out of the way of the trams: a footprint drawn too big must not swallow their street, so a
+			// house goes when a track runs well inside it (one that only touches it stays)
 			const trackSegs = trams?.trackByChunk.get(cx * 1000 + cz) ?? [];
 			const onTrack = (x: number, z: number, w: number, d: number, ang: number) => {
 				if (!trams) return false;
@@ -323,7 +324,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 						const px = ax + ((bx - ax) * k) / n;
 						const pz = az + ((bz - az) * k) / n;
 						// into the frame of the house
-						if (Math.abs(px * ca + pz * sa) < w / 2 + 0.45 && Math.abs(-px * sa + pz * ca) < d / 2 + 0.45) return true;
+						if (Math.abs(px * ca + pz * sa) < w / 2 - 0.2 && Math.abs(-px * sa + pz * ca) < d / 2 - 0.2) return true;
 					}
 				}
 				return false;
