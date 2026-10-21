@@ -5,6 +5,7 @@
 import type { Scene } from "three";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
+import { ACCIDENT, createAccident } from "./praha-accident";
 import { createTraffic } from "./praha-traffic";
 import { createTrams, lineBoxes, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
@@ -446,7 +447,12 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		// on the road, or on the deck of a bridge over the water
 		const groundAt = (x: number, z: number) => (isWater(x, z) ? 0.4 : columnH(x, z) + 0.07);
 		const all: Extras[] = [];
-		if (roads) all.push(createTraffic(scene, roads, groundAt, (x, z) => isWater(x, z) || roadOK(x, z)));
+		if (roads) {
+			// the streets into the crossing in Vysočany are closed: the police are there
+			const open = (x: number, z: number) => (x - ACCIDENT.x) ** 2 + (z - ACCIDENT.z) ** 2 > ACCIDENT.r ** 2;
+			all.push(createTraffic(scene, roads, groundAt, (x, z) => open(x, z) && (isWater(x, z) || roadOK(x, z))));
+			all.push(createAccident(scene, roads, groundAt));
+		}
 		if (trams) all.push(createTrams(scene, trams, TRAM, groundAt));
 		if (trains) {
 			all.push(
