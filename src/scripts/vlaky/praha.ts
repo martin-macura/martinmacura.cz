@@ -1,8 +1,8 @@
-// Prague: the land is the real one. The river, the streets, the parks, the hills and some 26,000 houses come from
-// OpenStreetMap and elevation tiles, baked by scripts/praha/bake.py into public/vlaky/praha.dat; the railway is our own.
+// Prague: the land is the real one. The river, the streets, the parks, the hills and some 230,000 houses come from
+// OpenStreetMap and elevation tiles, baked by scripts/praha/bake.py into public/vlaky/praha.dat. The trains and the
+// trams run on their real tracks by the PID timetable (praha-trams.ts); the cars are made up (praha-traffic.ts).
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: terrain tiles built from public elevation data.
 import type { Scene } from "three";
-import type { Layout } from "./rails";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { createTraffic } from "./praha-traffic";
@@ -12,37 +12,6 @@ import type { Chunk, Extras, World } from "./world";
 
 const CH = 32;
 const STEP = 0.8; // a step of the terrain is 8 m and 0.8 units high
-
-/** the railway of Prague: the same edges as on the fictional island, laid along the river */
-export const PRAHA_LAYOUT: Layout = {
-	ring: [
-		[-112, -18], [-104, -62], [-66, -92], [-8, -92], [72, -86], [118, -78], [170, -46],
-		[186, 8], [166, 54], [118, 74], [52, 66], [-42, 66], [-84, 58], [-104, 26],
-	],
-	inner: [[-66, -14], [-58, -50], [-22, -66], [56, -50], [100, -30], [110, 12], [84, 40], [46, 30], [-42, 36], [-68, 14]],
-	connectors: [
-		["c1", "R", 2, "I", 2, [-50, -88], [-36, -76]],
-		["c2", "I", 3, "R", 5, [74, -58], [96, -70]],
-		["c3", "R", 9, "I", 7, [88, 58], [64, 42]],
-		["c4", "I", 8, "R", 12, [-56, 42], [-70, 50]],
-	],
-	stations: [
-		["HLAVNI", "r4", 0.5, 1, true],
-		["MUZEUM", "r7", 0.5, 1, false],
-		["MUSTEK", "r8", 0.5, 1, false],
-		["NARODNI", "r9", 0.5, 1, true],
-		["UJEZD", "r12", 0.5, 1, false],
-		["PODHRADI", "r0", 0.5, 1, false],
-		["KAMPA", "i1", 0.5, 1, true],
-		["PAVLOVA", "i5", 0.5, 1, false],
-		["ZOFIN", "i6", 0.5, 1, false],
-		["LORETA", "i9", 0.5, 1, false],
-	],
-	tunnels: [
-		["r1", 9, 27],
-		["r13", 14, 34],
-	],
-};
 
 const WALLS = [0xe8dcc0, 0xd9b36a, 0xe0a38a, 0xa9c4d9, 0xb7cfa0, 0xf0ebe0, 0xd8c7a3, 0xc9a98c, 0xe8dcc0, 0xf0ebe0];
 const ROOFS = [0xb5482f, 0xa03e2a, 0xc4623a, 0xb5482f, 0xa03e2a, 0xc4623a, 0xb5482f, 0x8a3a2a, 0x5b3a2e, 0x4a5560];
@@ -464,7 +433,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		isleZ,
 		fit: { x: 40, z: -10, hx: 160, hz: 100 },
 		kMax: placed ? 6 : undefined,
-		layout: PRAHA_LAYOUT,
+		railway: false,
 		ground: 0xb3ab97,
 		isWater,
 		hillHeight,

@@ -28,6 +28,8 @@ export interface World {
 	fit: { x: number; z: number; hx: number; hz: number };
 	/** how far the view may zoom out, relative to the first view; 4 when absent */
 	kMax?: number;
+	/** false: the town runs trains of its own (as extras), and our railway is left out */
+	railway?: boolean;
 	/** where the tracks go; the default layout when absent */
 	layout?: Layout;
 	/** the colour of the ground between things; grass when absent */

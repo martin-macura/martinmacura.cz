@@ -52,17 +52,25 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	const world = options.world ?? fictionWorld;
 	const { isleX: ISLE_X, isleZ: ISLE_Z, isWater, roadAt, hillHeight } = world;
 	if (world.layout) useLayout(world.layout);
-	world.initWater(carvePoints);
-	const rails = createRails(isWater);
+	// a town with a railway of its own (Prague runs its trains by the timetable) has none of ours
+	const ours = world.railway !== false;
+	world.initWater(ours ? carvePoints : []);
 	box(scene, ISLE_X * 2, 0.3, ISLE_Z * 2, world.ground ?? COLORS.grass, 0, -0.15, 0);
 	box(scene, ISLE_X * 2, 1.4, ISLE_Z * 2, COLORS.soil, 0, -1, 0);
-	const scenery = buildRailScenery(scene, rails, isWater);
-	const sites = stationSites(rails);
-	const crossings = createCrossings(scene, rails, sites, isWater, roadAt);
-
-	const traffic = createTraffic(scene, rails, scenery, sites, rand);
-	const cars = crossings.attach(traffic.trains);
-	const extras = world.createExtras?.(scene, rails.railDist, crossings.roadOK);
+	const railway = ours
+		? (() => {
+				const rails = createRails(isWater);
+				const scenery = buildRailScenery(scene, rails, isWater);
+				const sites = stationSites(rails);
+				const crossings = createCrossings(scene, rails, sites, isWater, roadAt);
+				const traffic = createTraffic(scene, rails, scenery, sites, rand);
+				const cars = crossings.attach(traffic.trains);
+				return { rails, crossings, traffic, cars };
+			})()
+		: null;
+	const railDist = railway ? railway.rails.railDist : () => 99;
+	const roadOK = railway ? railway.crossings.roadOK : () => true;
+	const extras = world.createExtras?.(scene, railDist, roadOK);
 	const focus: Focus = { x: world.fit.x, z: world.fit.z, r: world.fit.hx, far: false };
 
 	// thousands of boxes would be thousands of draw calls: merge the track, the platforms and the rest of the scenery into one mesh per material
@@ -79,7 +87,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	for (const [mat, geos] of batches) scene.add(new Mesh(mergeGeometries(geos), mat));
 
 	// --- the town around it is built in chunks, where the camera looks
-	const buildChunk = world.createChunkBuilder(rails.railDist, crossings.roadOK);
+	const buildChunk = world.createChunkBuilder(railDist, roadOK);
 	const chunks = new Map<string, { chunk: Chunk; seen: number; far: boolean }>();
 	let tick = 0;
 	let far = false; // zoomed out: the town is built coarser
@@ -368,19 +376,19 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 
 	const draw = () => {
 		updateChunks(reduced ? Infinity : 5);
-		traffic.pose();
-		cars.pose();
+		railway?.traffic.pose();
+		railway?.cars.pose();
 		if (reduced) extras?.simulate(0, focus); // nothing else moves them along
 		extras?.pose();
 		renderer.render(scene, camera);
 	};
 
-	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...traffic, crossings: crossings.crossings, cars, extras, focus, rails, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
+	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...railway?.traffic, crossings: railway?.crossings.crossings, cars: railway?.cars, rails: railway?.rails, extras, focus, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
 
 	// the trains start out mid-journey rather than at a standstill
 	for (let i = 0; i < 30 * 12; i++) {
-		traffic.simulate(1 / 30);
-		cars.simulate(1 / 30);
+		railway?.traffic.simulate(1 / 30);
+		railway?.cars.simulate(1 / 30);
 	}
 	updateChunks(Infinity);
 	draw();
@@ -407,8 +415,8 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		const dt = Math.min(0.05, (now - last) / 1000);
 		last = now;
 		if (document.hidden || !canvas.clientWidth) return;
-		traffic.simulate(dt);
-		cars.simulate(dt);
+		railway?.traffic.simulate(dt);
+		railway?.cars.simulate(dt);
 		extras?.simulate(dt, focus);
 		coast(dt);
 		if (night !== nightTarget) {
