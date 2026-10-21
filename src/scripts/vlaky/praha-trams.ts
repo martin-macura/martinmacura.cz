@@ -4,6 +4,7 @@
 // the stations are drawn into the chunks. Timetable: PID / ROPID (CC BY 4.0).
 import { CanvasTexture, InstancedMesh, MeshLambertMaterial, NearestFilter, Object3D, type Scene, Sprite, SpriteMaterial } from "three";
 import { inChunk, walkSegment } from "./praha-roads";
+import { createLamps } from "./praha-traffic";
 import { COLORS, glass, unit } from "./util";
 import type { Extras, Focus } from "./world";
 
@@ -514,6 +515,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 	}
 	const dummy = new Object3D();
 	let focus: Focus | null = null;
+	const lamps = createLamps(scene, max);
 
 	// the names of the stations, shown near the view
 	const signs = data.labels.map((l) => {
@@ -539,6 +541,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 			const reach = focus.r * 1.3;
 			for (const sign of signs) sign.visible = !focus.far && Math.abs(sign.position.x - focus.x) < reach && Math.abs(sign.position.z - focus.z) < reach;
 			let n = 0;
+			const lit = lamps.begin();
 			for (const { trip, offset } of active) {
 				if (n >= max * sections) break;
 				const p = patterns[tripPattern[trip]];
@@ -570,9 +573,12 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 					dummy.scale.set(width - 0.04, 0.08, section - 0.2);
 					dummy.updateMatrix();
 					roofs.setMatrixAt(n, dummy.matrix);
+					// the headlights on the first car, the tail lights on the last
+					if (lit && (k === 0 || k === sections - 1)) lamps.put(at.x, y + 0.05 + height * 0.25, at.z, at.dx, at.dz, section / 2 - 0.02, width * 0.32, (k === 0 ? 1 : 0) | (k === sections - 1 ? 2 : 0));
 					n++;
 				}
 			}
+			lamps.end();
 			for (const m of [bodies, windows, roofs]) {
 				m.count = n;
 				m.instanceMatrix.needsUpdate = true;

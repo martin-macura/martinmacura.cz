@@ -40,10 +40,12 @@ export function createAccident(scene: Scene, net: RoadNet, groundAt: (x: number,
 		list.push([0.95, 0.26, 0.5, color, x, y + 0.16, z, ry]);
 		list.push([0.5, 0.2, 0.42, cabin, x - Math.cos(dir) * 0.05, y + 0.38, z - Math.sin(dir) * 0.05, ry]);
 	};
-	// the two that met: one in the middle, one turned askew into its side
-	car(x0 + Math.cos(along) * 0.2, z0 + Math.sin(along) * 0.2, along + 0.25, COLORS.red);
+	// the two that met: one in the middle, one turned askew into its side; both with their hazard lights on
+	const crashed: [number, number, number][] = [[x0 + Math.cos(along) * 0.2, z0 + Math.sin(along) * 0.2, along + 0.25]];
 	const [bx, bz] = at(across, 0.75, 0.15);
-	car(bx, bz, across + Math.PI + 0.7, 0xb9b9b9);
+	crashed.push([bx, bz, across + Math.PI + 0.7]);
+	car(...crashed[0], COLORS.red);
+	car(...crashed[1], 0xb9b9b9);
 	list.push([0.3, 0.06, 0.3, 0x14161c, x0 + 0.5, y + 0.06, z0 - 0.3, 0.4]); // a bit of the bumper
 	// the police: white with a blue stripe, on the streets around
 	const police: [number, number, number][] = [];
@@ -104,6 +106,23 @@ export function createAccident(scene: Scene, net: RoadNet, groundAt: (x: number,
 		}
 	});
 	scene.add(beacons);
+	// the hazard lights: the four corners of each crashed car, together
+	const hazards = new InstancedMesh(unit, new MeshBasicMaterial({ color: 0xffffff }), crashed.length * 4);
+	hazards.frustumCulled = false;
+	hazards.userData.dynamic = true;
+	hazards.visible = false;
+	crashed.forEach(([cx, cz, dir], i) => {
+		[[0.47, 0.2], [0.47, -0.2], [-0.47, 0.2], [-0.47, -0.2]].forEach(([u, w], k) => {
+			dummy.position.set(cx + Math.cos(dir) * u - Math.sin(dir) * w, y + 0.22, cz + Math.sin(dir) * u + Math.cos(dir) * w);
+			dummy.rotation.set(0, -dir, 0);
+			dummy.scale.set(0.05, 0.07, 0.11);
+			dummy.updateMatrix();
+			hazards.setMatrixAt(i * 4 + k, dummy.matrix);
+		});
+	});
+	scene.add(hazards);
+	const amber = new Color(0xffa21a);
+	const amberOff = new Color(0x5a3a10);
 	const blue = new Color(0x2f7bff);
 	const red = new Color(0xff2a2a);
 	const dim = new Color(0x1b1b2a);
@@ -115,7 +134,7 @@ export function createAccident(scene: Scene, net: RoadNet, groundAt: (x: number,
 		},
 		pose() {
 			const shown = !!focus && !focus.far && Math.abs(focus.x - x0) < focus.r * 1.3 && Math.abs(focus.z - z0) < focus.r * 1.3;
-			still.visible = beacons.visible = shown;
+			still.visible = beacons.visible = hazards.visible = shown;
 			if (!shown) return;
 			const t = performance.now() / 1000;
 			police.forEach((_, i) => {
@@ -124,6 +143,9 @@ export function createAccident(scene: Scene, net: RoadNet, groundAt: (x: number,
 				beacons.setColorAt(i * 2 + 1, on ? dim : red);
 			});
 			if (beacons.instanceColor) beacons.instanceColor.needsUpdate = true;
+			const blink = Math.floor(t * 2) % 2 ? amber : amberOff; // on and off every half a second
+			for (let i = 0; i < crashed.length * 4; i++) hazards.setColorAt(i, blink);
+			if (hazards.instanceColor) hazards.instanceColor.needsUpdate = true;
 		},
 	};
 }

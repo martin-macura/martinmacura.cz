@@ -1,9 +1,9 @@
 // Made-up traffic on the real streets of Prague: cars drive the graph of praha-roads.dat, keep to the right, follow
 // the one-way streets and keep a gap to the car in front. They live only around the view: a car that falls out of
 // it comes back somewhere in it, so a few hundred cars are enough for the whole city.
-import { Color, InstancedMesh, MeshLambertMaterial, Object3D, type Scene } from "three";
+import { Color, InstancedMesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
 import type { RoadNet } from "./praha-roads";
-import { COLORS, rng, unit } from "./util";
+import { COLORS, glow, rng, unit } from "./util";
 import type { Focus } from "./world";
 
 const MAX = 420;
@@ -11,6 +11,64 @@ const SPEED = [0, 1.3, 2, 3]; // units a second, by class
 const KEEP_RIGHT = [0, 0.24, 0.42, 0.62];
 const CAR_COLORS = [COLORS.red, COLORS.yellow, COLORS.blue, COLORS.green, COLORS.white, 0xff9f2f, 0x7a6a9a, 0x2b2b2b, 0xb9b9b9, 0x9a2a2a].map((c) => new Color(c));
 const CH = 32;
+
+/**
+ * headlights and tail lights for things that drive: two warm white at the front, two red at the back, shown only at
+ * night (when the lamp heads of the scene glow), as small pieces of an instanced mesh; no light of their own
+ */
+export function createLamps(scene: Scene, max: number) {
+	const heads = new InstancedMesh(unit, new MeshBasicMaterial({ color: 0xfff1c8 }), max * 2);
+	const tails = new InstancedMesh(unit, new MeshBasicMaterial({ color: 0xff2a1a }), max * 2);
+	for (const m of [heads, tails]) {
+		m.frustumCulled = false;
+		m.userData.dynamic = true;
+		m.count = 0;
+		m.visible = false;
+		scene.add(m);
+	}
+	const dummy = new Object3D();
+	let nh = 0; // lamps put this frame, at the front and at the back
+	let nt = 0;
+	let on = false;
+	return {
+		/** before putting the lamps of a frame: false by day, and nothing needs putting */
+		begin() {
+			nh = nt = 0;
+			on = glow.emissive.r > 0.5; // the scene's own night, as applyLight sets it
+			heads.visible = tails.visible = on;
+			return on;
+		},
+		/**
+		 * the lamps of a vehicle at (x, y, z) heading (fx, fz), `half` long and `wide` apart from its middle; `ends` 1 the
+		 * front only, 2 the back only (the first and the last car of a tram or a train), 3 both
+		 */
+		put(x: number, y: number, z: number, fx: number, fz: number, half: number, wide: number, ends = 3) {
+			if (!on) return;
+			const rx = fz;
+			const rz = -fx;
+			dummy.rotation.set(0, Math.atan2(fx, fz), 0);
+			dummy.scale.set(0.15, 0.1, 0.08);
+			for (const side of [-wide, wide]) {
+				if (ends & 1 && nh < max * 2) {
+					dummy.position.set(x + fx * half + rx * side, y, z + fz * half + rz * side);
+					dummy.updateMatrix();
+					heads.setMatrixAt(nh++, dummy.matrix);
+				}
+				if (ends & 2 && nt < max * 2) {
+					dummy.position.set(x - fx * half + rx * side, y, z - fz * half + rz * side);
+					dummy.updateMatrix();
+					tails.setMatrixAt(nt++, dummy.matrix);
+				}
+			}
+		},
+		end() {
+			heads.count = nh;
+			tails.count = nt;
+			heads.instanceMatrix.needsUpdate = true;
+			tails.instanceMatrix.needsUpdate = true;
+		},
+	};
+}
 
 interface Car {
 	e: number; // the edge it is on, -1 when parked out of sight
@@ -160,6 +218,8 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		scene.add(m);
 	}
 
+	const lamps = createLamps(scene, MAX);
+
 	// cars in the same lane of the same edge, to keep the gaps
 	const lanes = new Map<number, Car[]>();
 	let shown = false;
@@ -216,7 +276,11 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 	const dummy = new Object3D();
 	function pose() {
 		bodies.visible = cabins.visible = shown;
-		if (!shown) return;
+		const lit = lamps.begin();
+		if (!shown) {
+			lamps.end();
+			return;
+		}
 		let n = 0;
 		for (let i = 0; i < MAX; i++) {
 			const car = cars[i];
@@ -237,8 +301,10 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			dummy.updateMatrix();
 			cabins.setMatrixAt(n, dummy.matrix);
 			bodies.setColorAt(n, colors[i]);
+			if (lit) lamps.put(x, y + 0.2, z, at.dx, at.dz, 0.48, 0.15);
 			n++;
 		}
+		lamps.end();
 		bodies.count = cabins.count = n;
 		bodies.instanceMatrix.needsUpdate = true;
 		cabins.instanceMatrix.needsUpdate = true;
