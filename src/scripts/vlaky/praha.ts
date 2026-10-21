@@ -3,6 +3,7 @@
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: terrain tiles built from public elevation data.
 import type { Layout } from "./rails";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
+import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
 import type { Chunk, World } from "./world";
 
@@ -59,14 +60,19 @@ z0: number;
 	byChunk: Map<number, number[]>;
 }
 
-export async function loadPraha(url: string): Promise<World> {
+const gunzip = async (url: string) => {
 	const res = await fetch(url);
-	if (!res.ok || !res.body) throw new Error("praha.dat missing");
-	const buf = await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
-	return makePraha(buf);
+	if (!res.ok || !res.body) throw new Error(`${url} missing`);
+	return new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+};
+
+export async function loadPraha(url: string): Promise<World> {
+	// the streets as lines are a bonus: without them the raster draws them
+	const [buf, roads] = await Promise.all([gunzip(url), gunzip(url.replace(/\.dat$/, "-roads.dat")).catch(() => null)]);
+	return makePraha(buf, roads ? parseRoads(roads) : null);
 }
 
-function makePraha(buf: ArrayBuffer): World {
+function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 	const dv = new DataView(buf);
 	// a map of the whole city says where its grid lies (and starts with 0); the older one is centred on (0, 0)
 	const placed = dv.getUint16(0, true) === 0;
@@ -142,6 +148,7 @@ function makePraha(buf: ArrayBuffer): World {
 			const lamps: Box[] = [];
 			const add = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry = 0) => list.push([w, h, d, color, x, y, z, ry]);
 			const lamp = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry = 0) => lamps.push([w, h, d, color, x, y, z, ry]);
+			const lines = roads !== null && !far;
 
 			// --- the ground, row by row, in runs of equal cells
 			type Kind = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -192,7 +199,9 @@ function makePraha(buf: ArrayBuffer): World {
 						else if (road && roadOK(x, z)) kind = road === 1 ? 4 : road === 2 ? 5 : 7;
 						else if (!road && ((c >> 4) & 3) === 1 && h === 0) kind = 2;
 						else if (!road && ((c >> 4) & 3) === 2 && h === 0) kind = 3;
-						if (kind === 4 || kind === 5 || kind === 7) {
+						const lampOK = kind === 4 || kind === 5 || kind === 7;
+						if (lampOK && lines) kind = 0; // up close the lines draw the streets
+						if (lampOK) {
 							if (!far && hash2(Math.floor(x), Math.floor(z)) % 29 === 0 && railDist(x, z) > 2.5) {
 								add(0.1, 1.3, 0.1, COLORS.dark, x + 0.4, h + 0.65, z + 0.4);
 								lamp(0.26, 0.26, 0.26, COLORS.lit, x + 0.4, h + 1.4, z + 0.4);
@@ -207,6 +216,9 @@ function makePraha(buf: ArrayBuffer): World {
 					}
 				}
 			}
+			// the streets as lines, where they are not on a bridge over the water or cut by the railway
+			if (lines) roadBoxes(roads, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
+
 			// the piers of the bridges
 			for (let iz = 0; iz < CH; iz += 2) {
 				for (let ix = 0; ix < CH; ix += 2) {
