@@ -2,10 +2,11 @@
 """Step 1 of the Prague bake: download the OpenStreetMap layers and the terrain tiles into scripts/praha/.cache.
 
 OpenStreetMap data: (c) OpenStreetMap contributors, ODbL. Terrain: Mapzen/AWS terrain tiles (terrarium), see https://registry.opendata.aws/terrain-tiles/
+Finer terrain: DMR 4G, ČÚZK open data (into .cache*/dmr; bake.py prefers it to the tiles where it has it).
 Timetable: PID / ROPID, CC BY 4.0, https://pid.cz/o-systemu/opendata/ (into .cache*/gtfs, for bake_trams.py)
 Run once; later steps read the cache, so the network is not needed again.
 The steps after it: bake.py (praha.dat), bake_roads.py (praha-roads.dat), bake_trams.py (praha-tram.dat)."""
-import io, json, math, os, sys, time, urllib.parse, urllib.request, zipfile
+import io, json, math, os, re, sys, time, urllib.parse, urllib.request, zipfile
 
 from common import CACHE, FULL, S, N, W, E
 
@@ -48,6 +49,7 @@ Q = {
     "highways": lambda b: f'[out:json][timeout:250];way["highway"~"^({HW})$"]{b};out geom;',
     "green": lambda b: f'[out:json][timeout:250];(way["leisure"~"^(park|garden|pitch|golf_course|recreation_ground)$"]{b};relation["leisure"~"^(park|garden)$"]{b};way["landuse"~"^(forest|grass|meadow|recreation_ground|cemetery|allotments|village_green|vineyard|orchard)$"]{b};relation["landuse"~"^(forest|grass|meadow|cemetery)$"]{b};way["natural"~"^(wood|scrub|grassland)$"]{b};relation["natural"="wood"]{b};);out geom;',
     "rail": lambda b: f'[out:json][timeout:250];(way["railway"~"^(rail|light_rail|subway|tram)$"]{b};node["railway"~"^(station|halt|level_crossing)$"]{b};);out geom;',
+    "subway": lambda b: f'[out:json][timeout:250];way["railway"="subway"]{b};out geom;',
     "buildings": lambda b: f'[out:json][timeout:250];(way["building"]{b};relation["building"]{b};);out geom;',
 }
 
@@ -68,6 +70,7 @@ if FULL:
     for layer in ("water", "highways", "green"):
         tiled(layer, 5, 4)
     tiled("buildings", 10, 8)
+    overpass("subway", Q["subway"](bbox(S, N, W, E)))  # the metro, for the stretches of it out in the open
 else:
     for layer in ("water", "highways", "green", "rail"):
         overpass(layer, Q[layer](bbox(S, N, W, E)))
@@ -92,6 +95,31 @@ for tx in range(int(x0), int(x1) + 1):
             with urllib.request.urlopen(req, timeout=60) as r, open(path, "wb") as f:
                 f.write(r.read())
             print("tile", tx, ty, flush=True)
+
+# the terrain, finer: DMR 4G of ČÚZK (a 5 m grid of the bare ground, from the airborne laser scan), in sheets of 2.5 x 2 km,
+# the ones that touch the map; about 0.7 MB each. Open data of ČÚZK, https://geoportal.cuzk.gov.cz
+DMR = os.path.join(CACHE, "dmr")
+os.makedirs(DMR, exist_ok=True)
+feed = os.path.join(DMR, "feed.xml")
+if not os.path.exists(feed):
+    req = urllib.request.Request("https://atom.cuzk.gov.cz/DMR4G-SJTSK-TIFF/DMR4G-SJTSK-TIFF.xml", headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=300) as r, open(feed, "wb") as f:
+        f.write(r.read())
+for entry in open(feed, encoding="utf-8").read().split("<entry>")[1:]:
+    poly = list(map(float, re.search(r"<georss:polygon>([^<]*)", entry).group(1).split()))
+    lats, lons = poly[0::2], poly[1::2]
+    if min(lats) >= N or max(lats) <= S or min(lons) >= E or max(lons) <= W:
+        continue
+    sheet = re.search(r"TIFF_(\w+)\.xml", entry).group(1)
+    path = os.path.join(DMR, sheet + ".zip")
+    if not os.path.exists(path):
+        url = f"https://openzu.cuzk.gov.cz/opendata/DMR4G-TIFF/epsg-5514/{sheet}.zip"
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read()
+        with open(path, "wb") as f:
+            f.write(data)
+        print("terrain sheet", sheet, flush=True)
 
 # the timetable of the trams: the whole PID feed, about 50 MB, of which the trams are a small part
 gtfs = os.path.join(CACHE, "gtfs")

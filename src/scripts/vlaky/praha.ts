@@ -1,13 +1,14 @@
 // Prague: the land is the real one. The river, the streets, the parks, the hills and some 230,000 houses come from
-// OpenStreetMap and elevation tiles, baked by scripts/praha/bake.py into public/vlaky/praha.dat. The trains and the
-// trams run on their real tracks by the PID timetable (praha-trams.ts); the cars are made up (praha-traffic.ts).
-// Data: (c) OpenStreetMap contributors (ODbL). Terrain: terrain tiles built from public elevation data.
+// OpenStreetMap and the terrain model of ČÚZK, baked by scripts/praha/bake.py into public/vlaky/praha.dat. The trains,
+// the trams, the city buses and the metro (where it is out in the open) run on their real routes by the PID timetable
+// (praha-trams.ts); the cars are made up (praha-traffic.ts).
+// Data: (c) OpenStreetMap contributors (ODbL). Terrain: DMR 4G (c) ČÚZK. Timetables: PID (CC BY 4.0).
 import type { Scene } from "three";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
 import { createTraffic } from "./praha-traffic";
-import { createTrams, lineBoxes, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
+import { BUS, createTrams, lineBoxes, METRO, nearTrack, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
 import type { Chunk, Extras, World } from "./world";
 
@@ -41,16 +42,16 @@ const gunzip = async (url: string) => {
 
 export async function loadPraha(url: string): Promise<World> {
 	// the streets as lines, the trams and the trains are a bonus: without the lines the raster draws the streets
-	const [buf, roads, trams, trains] = await Promise.all([
+	const [buf, roads, ...lines] = await Promise.all([
 		gunzip(url),
 		gunzip(url.replace(/\.dat$/, "-roads.dat")).catch(() => null),
-		gunzip(url.replace(/\.dat$/, "-tram.dat")).catch(() => null),
-		gunzip(url.replace(/\.dat$/, "-rail.dat")).catch(() => null),
+		...["tram", "rail", "bus", "metro"].map((k) => gunzip(url.replace(/\.dat$/, `-${k}.dat`)).catch(() => null)),
 	]);
-	return makePraha(buf, roads ? parseRoads(roads) : null, trams ? parseTrams(trams) : null, trains ? parseTrams(trains) : null);
+	const [trams, trains, buses, metro] = lines.map((b) => (b ? parseTrams(b) : null));
+	return makePraha(buf, roads ? parseRoads(roads) : null, trams, trains, buses, metro);
 }
 
-function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | null, trains: TramData | null): World {
+function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | null, trains: TramData | null, buses: TramData | null, metro: TramData | null): World {
 	const dv = new DataView(buf);
 	// a map of the whole city says where its grid lies (and starts with 0); the older one is centred on (0, 0)
 	const placed = dv.getUint16(0, true) === 0;
@@ -96,6 +97,9 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	const hillHeight = (x: number, z: number) => stepAt(x, z) * STEP;
 	// the railway runs at a height of its own, smooth where the terrain goes in steps
 	const bed = trains ? railProfile(trains, hillHeight, (x, z) => isWater(x, z)) : undefined;
+	// the metro, where it comes out of the ground: a railway of its own
+	const metroBed = metro ? railProfile(metro, hillHeight, (x, z) => isWater(x, z)) : undefined;
+	const metroSeen = metro ? nearTrack(metro) : () => false;
 
 	function initWater(carves: [number, number, number][]) {
 		for (const [cx, cz, r] of carves) {
@@ -117,7 +121,12 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		const s = stepAt(mx, mz);
 		if (s === 0) return 0;
 		const f = clamp((railDist(mx, mz) - 6) / 7, 0, 1);
-		return Math.floor(s * f + 1e-6) * STEP;
+		const h = Math.floor(s * f + 1e-6) * STEP;
+		// the land a little above the bed of the railway (an embankment the terrain model has kept, a cutting) is dug
+		// down to it; a real hill is left for the tunnel through it
+		const b = bed ? bed(mx, mz) : NaN;
+		if (b > 0 && h > b && h < b + 3 * STEP) return Math.floor(b / STEP + 1e-6) * STEP;
+		return h;
 	};
 
 	function createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
@@ -204,6 +213,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			if (trams) lineBoxes(trams, TRAM, cx, cz, far, columnH, isWater, (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too
 			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, columnH, isWater, () => false, add, bed);
+			if (metro) lineBoxes(metro, METRO, cx, cz, far, columnH, isWater, (x, z) => !metroSeen(x, z), add, metroBed);
 
 			// the piers of the bridges
 			for (let iz = 0; iz < CH; iz += 2) {
@@ -285,6 +295,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			// on the ballast of a railway, or on the platforms of a station.
 			const near: { xs: Float32Array; zs: Float32Array; segs: number[]; margin: number }[] = [];
 			if (trams) near.push({ xs: trams.tx, zs: trams.tz, segs: trams.trackByChunk.get(cx * 1000 + cz) ?? [], margin: -0.2 });
+			if (metro) near.push({ xs: metro.tx, zs: metro.tz, segs: metro.trackByChunk.get(cx * 1000 + cz) ?? [], margin: 0.6 });
 			if (trains) {
 				near.push({ xs: trains.tx, zs: trains.tz, segs: trains.trackByChunk.get(cx * 1000 + cz) ?? [], margin: 0.6 });
 				// the platforms, as their middle lines
@@ -355,7 +366,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 					gmax = Math.max(gmax, g);
 					gmin = Math.min(gmin, g);
 				}
-				if (!ok || gmax - gmin > 2.5) continue;
+				// a house on too steep a slope is left out; a big one may stand on a plinth that much higher
+				if (!ok || gmax - gmin > Math.max(2.5, Math.max(w, d) * 0.3)) continue;
 				const k = hash2(Math.round(x * 4), Math.round(z * 4));
 				const wall = WALLS[k % WALLS.length];
 				const roof = ROOFS[(k >>> 5) % ROOFS.length];
@@ -363,6 +375,11 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				const place = (lx: number, lz: number): [number, number] => [x + lx * ca - lz * sa, z + lx * sa + lz * ca];
 				let h = clamp(metres / 5.2, 1, 11);
 				if (kind & 1) h = Math.max(h, 2.6);
+				// from afar a house is only its roof on the ground, like on a map; a church keeps its tower to find the way by
+				if (far && !(kind & 1)) {
+					add(w, 0.3, d, kind & 2 || h > 7.5 ? 0x8a8f96 : roof, x, gmax + 0.15, z, ry);
+					continue;
+				}
 				if (gmax > gmin + 0.05) add(w, gmax - gmin, d, wall, x, (gmax + gmin) / 2, z, ry);
 				add(w, h, d, wall, x, gmax + h / 2, z, ry);
 				const flat = kind & 2 || h > 7.5;
@@ -454,6 +471,15 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			all.push(createAccident(scene, roads, groundAt));
 		}
 		if (trams) all.push(createTrams(scene, trams, TRAM, groundAt));
+		if (buses) all.push(createTrams(scene, buses, BUS, groundAt));
+		if (metro) {
+			all.push(
+				createTrams(scene, metro, METRO, (x, z) => {
+					const h = metroBed ? metroBed(x, z) : NaN;
+					return Number.isNaN(h) ? columnH(x, z) : h;
+				}),
+			);
+		}
 		if (trains) {
 			all.push(
 				createTrams(scene, trains, TRAIN, (x, z) => {
@@ -465,6 +491,32 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		return {
 			simulate: (dt, focus) => all.forEach((e) => e.simulate(dt, focus)),
 			pose: () => all.forEach((e) => e.pose()),
+			// a click picks the nearest tram or train of all of them
+			pick(toScreen, px, py) {
+				let best: ReturnType<NonNullable<Extras["pick"]>> = null;
+				for (const e of all) {
+					const hit = e.pick?.(toScreen, px, py) ?? null;
+					if (hit && (!best || hit.dist < best.dist)) best = hit;
+				}
+				if (!best) return null;
+				const chosen = best;
+				return {
+					dist: chosen.dist,
+					select() {
+						for (const e of all) e.unselect?.();
+						chosen.select();
+					},
+				};
+			},
+			card: () => {
+				for (const e of all) {
+					const c = e.card?.();
+					if (c) return c;
+				}
+				return null;
+			},
+			unselect: () => all.forEach((e) => e.unselect?.()),
+			places: () => all.flatMap((e) => e.places?.() ?? []),
 		};
 	}
 

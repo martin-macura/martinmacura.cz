@@ -2,11 +2,11 @@
 // praha-rail.dat): every one that runs now, by the clock of Prague, is where the timetable puts it, on the line it
 // runs on. Nothing is live: it is the plan, so a late tram in the street is on time here. The tracks, the stops and
 // the stations are drawn into the chunks. Timetable: PID / ROPID (CC BY 4.0).
-import { CanvasTexture, InstancedMesh, MeshLambertMaterial, NearestFilter, Object3D, type Scene, Sprite, SpriteMaterial } from "three";
+import { InstancedMesh, Mesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
 import { inChunk, walkSegment } from "./praha-roads";
 import { createLamps } from "./praha-traffic";
 import { COLORS, glass, unit } from "./util";
-import type { Extras, Focus } from "./world";
+import { type Card, type Extras, type Focus, type Place, type ToScreen, VEHICLES_UP_TO } from "./world";
 
 const CH = 32;
 const M = 6; // metres in a unit
@@ -21,18 +21,44 @@ export interface LineStyle {
 	body: number;
 	roof: number;
 	max: number; // at most this many at once
+	title: string; // on the card of one
+	places: boolean; // its stops have their names written over the scene
+	hidden?: boolean; // seen only where its track is laid (the metro, out of its tunnels)
 }
-export const TRAM: LineStyle = { rail: false, sections: 3, section: 1.7, width: 0.46, height: 0.5, body: 0xd8322a, roof: 0xf2ead8, max: 900 };
+export const TRAM: LineStyle = { rail: false, sections: 3, section: 1.7, width: 0.46, height: 0.5, body: 0xd8322a, roof: 0xf2ead8, max: 900, title: "TRAMVAJ", places: true };
 /** a CityElefant: four double-deck cars of about 20 m */
-export const TRAIN: LineStyle = { rail: true, sections: 4, section: 3.3, width: 0.62, height: 0.78, body: 0x2f62c8, roof: 0xf2f2f2, max: 300 };
+export const TRAIN: LineStyle = { rail: true, sections: 4, section: 3.3, width: 0.62, height: 0.78, body: 0x2f62c8, roof: 0xf2f2f2, max: 300, title: "VLAK", places: true };
+/** an articulated bus of 18 m, in the streets with the cars */
+export const BUS: LineStyle = { rail: false, sections: 2, section: 1.5, width: 0.44, height: 0.5, body: 0xb8262c, roof: 0xd9dde2, max: 1500, title: "AUTOBUS", places: false };
+/** a train of five cars of the metro, silver and blue, seen where it comes out of the ground */
+export const METRO: LineStyle = { rail: true, sections: 5, section: 3.2, width: 0.6, height: 0.62, body: 0xa9b4bf, roof: 0x2f4a7a, max: 80, title: "METRO", places: true, hidden: true };
+
+/** whether (x, z) is within `r` of a track of the line */
+export function nearTrack(data: TramData, r = 1) {
+	const { tx, tz, trackByChunk } = data;
+	return (x: number, z: number) => {
+		for (const i of trackByChunk.get(Math.floor(x / CH) * 1000 + Math.floor(z / CH)) ?? []) {
+			const ax = tx[i];
+			const az = tz[i];
+			const dx = tx[i + 1] - ax;
+			const dz = tz[i + 1] - az;
+			const l2 = dx * dx + dz * dz || 1;
+			const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+			if ((ax + dx * t - x) ** 2 + (az + dz * t - z) ** 2 < r * r) return true;
+		}
+		return false;
+	};
+}
 
 export interface TramData {
 	routes: string[];
+	/** the names of the stops and of where the trips go */
+	names: string[];
 	/** the rails, each street once: segments as indexes of their first point in tx/tz, by chunk */
 	tx: Float32Array;
 	tz: Float32Array;
 	trackByChunk: Map<number, number[]>;
-	stops: { x: number; z: number; heading: number }[];
+	stops: { x: number; z: number; heading: number; name: number }[];
 	stopsByChunk: Map<number, number[]>;
 	/** the names of the stations */
 	labels: { x: number; z: number; name: string }[];
@@ -42,7 +68,8 @@ export interface TramData {
 	sz: Float32Array;
 	sm: Float32Array;
 	/** pattern p: its route, its shape, its stops (arrival, departure in seconds after the start, metres) */
-	patterns: { route: number; shape: number; arr: Uint32Array; dep: Uint32Array; m: Float32Array }[];
+	/** pattern p: its route, its shape, where it goes, its stops (arrival, departure in seconds after the start, metres, stop + 1) */
+	patterns: { route: number; shape: number; headsign: number; arr: Uint32Array; dep: Uint32Array; m: Float32Array; stop: Uint32Array }[];
 	/** trips sorted by start: seconds after midnight, pattern, day mask (1 working day, 2 Saturday, 4 Sunday) */
 	tripStart: Uint32Array;
 	tripPattern: Uint32Array;
@@ -84,6 +111,13 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 		routes.push(String.fromCharCode(...b.subarray(o, o + len)));
 		o += len;
 	}
+	const utf8 = new TextDecoder();
+	const names: string[] = [];
+	for (let n = uv(); n > 0; n--) {
+		const len = uv();
+		names.push(utf8.decode(b.subarray(o, o + len)));
+		o += len;
+	}
 	// rails: a NaN between two tracks, so that no segment joins them
 	const txs: number[] = [];
 	const tzs: number[] = [];
@@ -112,7 +146,8 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 		for (let n = uv(); n > 0; n--) {
 			x += sv();
 			z += sv();
-			const s = { x: x / 4, z: z / 4, heading: (uv() / 64) * Math.PI * 2 };
+			const heading = (uv() / 64) * Math.PI * 2;
+			const s = { x: x / 4, z: z / 4, heading, name: uv() };
 			bucket(stopsByChunk, s.x, s.z, s.x, s.z, 0, stops.length);
 			stops.push(s);
 		}
@@ -156,16 +191,19 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 	for (let n = uv(); n > 0; n--) {
 		const route = uv();
 		const shape = uv();
+		const headsign = uv();
 		const k = uv();
 		const arr = new Uint32Array(k);
 		const dep = new Uint32Array(k);
 		const m = new Float32Array(k);
+		const stop = new Uint32Array(k);
 		for (let i = 0; i < k; i++) {
 			arr[i] = uv();
 			dep[i] = arr[i] + uv();
 			m[i] = uv();
+			stop[i] = uv();
 		}
-		patterns.push({ route, shape, arr, dep, m });
+		patterns.push({ route, shape, headsign, arr, dep, m, stop });
 	}
 	const nt = uv();
 	const tripStart = new Uint32Array(nt);
@@ -183,6 +221,7 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 	}
 	return {
 		routes,
+		names,
 		tx,
 		tz,
 		trackByChunk,
@@ -291,9 +330,13 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 			else cells.set(c, [xs[k], zs[k], v]);
 		}
 	}
+	// the height at a point: the mean of the tracks within 1.5 units, so that tracks side by side (profiled each on its
+	// own, some of them short) lie at one height; else the nearest within two units
 	return (x: number, z: number) => {
-		let best = 4; // within two units
+		let best = 4;
 		let v = NaN;
+		let sum = 0;
+		let n = 0;
 		const gx = Math.floor(x / 2);
 		const gz = Math.floor(z / 2);
 		for (let a = -1; a <= 1; a++) {
@@ -302,6 +345,10 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 				if (!list) continue;
 				for (let k = 0; k < list.length; k += 3) {
 					const d = (list[k] - x) ** 2 + (list[k + 1] - z) ** 2;
+					if (d < 2.25) {
+						sum += list[k + 2];
+						n++;
+					}
 					if (d < best) {
 						best = d;
 						v = list[k + 2];
@@ -309,7 +356,7 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 				}
 			}
 		}
-		return v;
+		return n ? Math.round((sum / n) * 20) / 20 : v;
 	};
 }
 
@@ -410,31 +457,6 @@ export function lineBoxes(
 	}
 }
 
-/** a sign with the name of a station, as wide as the name needs */
-function labelSprite(text: string) {
-	const c = document.createElement("canvas");
-	const w = Math.max(64, text.length * 8 + 8);
-	c.width = w;
-	c.height = 16;
-	const g = c.getContext("2d")!;
-	g.fillStyle = "#f2f2f2";
-	g.fillRect(0, 0, w, 16);
-	g.fillStyle = "#0c0c0c";
-	g.fillRect(0, 0, w, 1);
-	g.fillRect(0, 15, w, 1);
-	g.font = '8px "Press Start 2P", monospace';
-	g.textBaseline = "middle";
-	g.textAlign = "center";
-	g.fillText(text, w / 2, 9);
-	const tex = new CanvasTexture(c);
-	tex.magFilter = NearestFilter;
-	tex.minFilter = NearestFilter;
-	const sprite = new Sprite(new SpriteMaterial({ map: tex, depthTest: false }));
-	sprite.renderOrder = 10; // signs stay readable even behind a building
-	sprite.scale.set((w / 16) * 2.2, 2.2, 1);
-	return sprite;
-}
-
 /** the seconds since midnight in Prague, and what kind of day it is there (1 working day, 2 Saturday, 4 Sunday) */
 const pragueClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Prague", weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 const KIND: Record<string, number> = { Mon: 1, Tue: 1, Wed: 1, Thu: 1, Fri: 1, Sat: 2, Sun: 4 };
@@ -516,15 +538,48 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 	const dummy = new Object3D();
 	let focus: Focus | null = null;
 	const lamps = createLamps(scene, max);
+	const seen = style.hidden ? nearTrack(data) : () => true;
 
-	// the names of the stations, shown near the view
-	const signs = data.labels.map((l) => {
-		const sprite = labelSprite(l.name);
-		sprite.position.set(l.x, groundAt(l.x, l.z) + 3.2, l.z);
-		sprite.visible = false;
-		scene.add(sprite);
-		return sprite;
-	});
+	// the vehicles drawn in the last frame, by the middle of their middle car, for picking one by a click
+	const drawn: { trip: number; offset: number; x: number; y: number; z: number }[] = [];
+	let picked: { trip: number; offset: number } | null = null;
+	let pickedAt: { x: number; y: number; z: number } | null = null;
+	// the picked one has a yellow diamond over it
+	const marker = new Mesh(unit, new MeshBasicMaterial({ color: COLORS.yellow }));
+	marker.userData.dynamic = true;
+	marker.visible = false;
+	scene.add(marker);
+	const clock = (secs: number) => {
+		const t = ((Math.round(secs / 60) % 1440) + 1440) % 1440;
+		return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+	};
+	const stopName = (p: TramData["patterns"][number], i: number) => {
+		const s = p.stop[i];
+		return s ? data.names[data.stops[s - 1].name] : "";
+	};
+
+	// the names of the stations (or the stops): one in the middle of the platforms of the same name, unless they lie apart
+	const places: Place[] = [];
+	if (style.places) {
+		const groups: { name: string; x: number; z: number; n: number }[] = [];
+		for (const st of data.stops) {
+			// "Praha hlavní nádraží" is Hlavní nádraží here, "Praha-Libeň" Libeň
+			let name = data.names[st.name].replace(/^Praha[- ]/, "").replace(/ nádr\.$/, " nádraží");
+			name = name[0].toUpperCase() + name.slice(1);
+			const g = groups.find((g) => g.name === name && Math.hypot(g.x / g.n - st.x, g.z / g.n - st.z) < 25);
+			if (g) {
+				g.x += st.x;
+				g.z += st.z;
+				g.n++;
+			} else groups.push({ name, x: st.x, z: st.z, n: 1 });
+		}
+		for (const g of groups) {
+			const x = g.x / g.n;
+			const z = g.z / g.n;
+			if (!seen(x, z)) continue;
+			places.push({ x, y: groundAt(x, z) + (style.rail ? 1.6 : 0.8), z, name: g.name, rank: style.rail ? 0 : 1 });
+		}
+	}
 
 	return {
 		simulate(_dt, f) {
@@ -539,10 +594,13 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 			}
 			const { secs } = prague(now);
 			const reach = focus.r * 1.3;
-			for (const sign of signs) sign.visible = !focus.far && Math.abs(sign.position.x - focus.x) < reach && Math.abs(sign.position.z - focus.z) < reach;
+			// from afar only the trains and the metro, not the trams and the buses one by one
+			const out = !style.rail && focus.k > VEHICLES_UP_TO;
 			let n = 0;
 			const lit = lamps.begin();
-			for (const { trip, offset } of active) {
+			drawn.length = 0;
+			pickedAt = null;
+			for (const { trip, offset } of out ? [] : active) {
 				if (n >= max * sections) break;
 				const p = patterns[tripPattern[trip]];
 				const tau = secs + offset - tripStart[trip];
@@ -557,6 +615,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 				for (let k = 0; k < sections; k++) {
 					const m = Math.max(first, front - (k + 0.5) * section * M);
 					onShape(p.shape, m);
+					if (!seen(at.x, at.z)) continue; // this car is still in the tunnel
 					// over the water a train runs on the deck of its bridge
 					const y = groundAt(at.x, at.z) + (style.rail ? 0.2 : 0);
 					const yaw = Math.atan2(at.dx, at.dz);
@@ -573,16 +632,69 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 					dummy.scale.set(width - 0.04, 0.08, section - 0.2);
 					dummy.updateMatrix();
 					roofs.setMatrixAt(n, dummy.matrix);
+					if (k === sections >> 1) drawn.push({ trip, offset, x: at.x, y: y + height / 2, z: at.z });
 					// the headlights on the first car, the tail lights on the last
 					if (lit && (k === 0 || k === sections - 1)) lamps.put(at.x, y + 0.05 + height * 0.25, at.z, at.dx, at.dz, section / 2 - 0.02, width * 0.32, (k === 0 ? 1 : 0) | (k === sections - 1 ? 2 : 0));
 					n++;
 				}
 			}
 			lamps.end();
+			if (picked) {
+				const d = drawn.find((v) => v.trip === picked!.trip && v.offset === picked!.offset);
+				if (d) {
+					pickedAt = d;
+					marker.position.set(d.x, d.y + height / 2 + 0.9 + Math.sin(now / 250) * 0.15, d.z);
+					marker.rotation.set(Math.PI / 4, now / 600, Math.PI / 4);
+					marker.scale.setScalar(0.45);
+				}
+			}
+			marker.visible = !!pickedAt;
 			for (const m of [bodies, windows, roofs]) {
 				m.count = n;
 				m.instanceMatrix.needsUpdate = true;
 			}
+		},
+		places: () => places,
+		pick(toScreen: ToScreen, px: number, py: number) {
+			let best: (typeof drawn)[number] | null = null;
+			let dist = 22; // CSS pixels: a vehicle is small, the finger is not
+			for (const v of drawn) {
+				const [sx, sy] = toScreen(v.x, v.y, v.z);
+				const d = Math.hypot(sx - px, sy - py);
+				if (d < dist) {
+					dist = d;
+					best = v;
+				}
+			}
+			if (!best) return null;
+			const chosen = best;
+			return { dist, select: () => void (picked = { trip: chosen.trip, offset: chosen.offset }) };
+		},
+		unselect() {
+			picked = null;
+		},
+		card(): Card | null {
+			if (!picked || !pickedAt) return null;
+			const p = patterns[tripPattern[picked.trip]];
+			const start = tripStart[picked.trip] - picked.offset; // seconds after today's midnight
+			const tau = prague(Date.now()).secs - start;
+			if (tau > p.arr[p.arr.length - 1]) {
+				picked = null; // it has arrived
+				return null;
+			}
+			// the stop it stands at or the last one it left, and the next one it stops at (on the map, with a name)
+			let i = 0;
+			while (i < p.arr.length - 1 && p.arr[i + 1] <= tau) i++;
+			const standing = tau <= p.dep[i];
+			let next = i + 1;
+			while (next < p.arr.length && !p.stop[next]) next++;
+			const lines = [`směr: ${data.names[p.headsign]}`];
+			if (standing && stopName(p, i)) lines.push(`stojí: ${stopName(p, i)}, odjede ${clock(start + p.dep[i])}`);
+			else if (stopName(p, i)) lines.push(`odjel: ${stopName(p, i)}`);
+			if (next < p.arr.length) lines.push(`příští: ${stopName(p, next)} v ${clock(start + p.arr[next])}`);
+			const last = p.arr.length - 1;
+			if (stopName(p, last) && next !== last) lines.push(`konečná v ${clock(start + p.arr[last])}`);
+			return { ...pickedAt, title: `${style.title} ${data.routes[p.route]}`, lines };
 		},
 	};
 }
