@@ -117,7 +117,12 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		const s = stepAt(mx, mz);
 		if (s === 0) return 0;
 		const f = clamp((railDist(mx, mz) - 6) / 7, 0, 1);
-		return Math.floor(s * f + 1e-6) * STEP;
+		const h = Math.floor(s * f + 1e-6) * STEP;
+		// the land a little above the bed of the railway (an embankment the terrain model has kept, a cutting) is dug
+		// down to it; a real hill is left for the tunnel through it
+		const b = bed ? bed(mx, mz) : NaN;
+		if (b > 0 && h > b && h < b + 3 * STEP) return Math.floor(b / STEP + 1e-6) * STEP;
+		return h;
 	};
 
 	function createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
@@ -355,7 +360,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 					gmax = Math.max(gmax, g);
 					gmin = Math.min(gmin, g);
 				}
-				if (!ok || gmax - gmin > 2.5) continue;
+				// a house on too steep a slope is left out; a big one may stand on a plinth that much higher
+				if (!ok || gmax - gmin > Math.max(2.5, Math.max(w, d) * 0.3)) continue;
 				const k = hash2(Math.round(x * 4), Math.round(z * 4));
 				const wall = WALLS[k % WALLS.length];
 				const roof = ROOFS[(k >>> 5) % ROOFS.length];

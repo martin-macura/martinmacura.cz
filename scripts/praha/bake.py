@@ -7,7 +7,8 @@ layout of the decompressed data (little endian):
   width*height bytes               per cell: bit0 water, bits1-2 road (0 none, 1 street, 2 avenue, 3 motorway), bit3 bridge, bits4-5 green (0 none, 1 park, 2 wood)
   (width/2)*(height/2) bytes       terrain, for every 2 x 2 cells: steps of 8 m above the river
   u32 count, then count * 10 bytes buildings: i16 x*4, i16 z*4, u8 w*8, u8 d*8, u8 angle (0..255 = 0..pi), u8 metres, u8 kind (1 church, 2 flat roof, 4 big)
-Data: (c) OpenStreetMap contributors, ODbL; terrain: terrain tiles (terrarium) built from public elevation data."""
+Data: (c) OpenStreetMap contributors, ODbL; terrain: DMR 4G (c) ČÚZK where fetched, else terrain tiles (terrarium) built from public elevation data.
+Run: PRAHA_FULL=1 uv run --python 3.12 --with numpy --with pillow --with tifffile --with imagecodecs --with pyproj python bake.py"""
 import gzip, io, math, os, struct
 import numpy as np
 from PIL import Image, ImageDraw
@@ -86,6 +87,54 @@ elev = np.zeros((hz, hx))
 for (tix, tiy), t in tiles.items():
     m = (tx == tix) & (ty == tiy)
     elev[m] = t[np.minimum(255, ((fy - tiy) * 256).astype(int))[m], np.minimum(255, ((fx - tix) * 256).astype(int))[m]]
+
+# finer where ČÚZK has it (all of Prague): DMR 4G, the bare ground on a 5 m grid in S-JTSK; every 2 x 2 cells (12 m) is
+# the mean of 3 x 3 samples over it, not one point, so that a slope does not jump from cell to cell
+dmr_dir = os.path.join(CACHE, "dmr")
+sheets = sorted(f for f in os.listdir(dmr_dir) if f.endswith(".zip")) if os.path.isdir(dmr_dir) else []
+if sheets:
+    import zipfile
+    import tifffile
+    from pyproj import Transformer
+
+    grids = []
+    for f in sheets:
+        z = zipfile.ZipFile(os.path.join(dmr_dir, f))
+        name = f[:-4]
+        a, _, _, e, cx, cy = map(float, z.read(name + ".tfw").split())
+        g = tifffile.imread(io.BytesIO(z.read(name + ".tif"))).astype(np.float32)
+        g[g < -1000] = np.nan
+        grids.append((cx, cy, a, e, g))  # (cx, cy) is the middle of the top left pixel
+    x0 = min(g[0] for g in grids)
+    y1 = max(g[1] for g in grids)
+    x1 = max(g[0] + g[4].shape[1] * 5 for g in grids)
+    y0 = min(g[1] - g[4].shape[0] * 5 for g in grids)
+    mosaic = np.full((int(round((y1 - y0) / 5)) + 1, int(round((x1 - x0) / 5)) + 1), np.nan, dtype=np.float32)
+    for cx, cy, _, _, g in grids:
+        r, c = int(round((y1 - cy) / 5)), int(round((cx - x0) / 5))
+        mosaic[r : r + g.shape[0], c : c + g.shape[1]] = np.where(np.isnan(g), mosaic[r : r + g.shape[0], c : c + g.shape[1]], g)
+    to_jtsk = Transformer.from_crs("EPSG:4326", "EPSG:5514", always_xy=True)
+    acc = np.zeros((hz, hx))
+    cnt = np.zeros((hz, hx))
+    for du in (-0.67, 0, 0.67):  # in world units around the middle of the 2 x 2 cells
+        for dv in (-0.67, 0, 0.67):
+            la = np.broadcast_to((LAT0 - (GZ0 + np.arange(hz) * 2 + 1 + dv) / KZ)[:, None], (hz, hx))
+            lo = np.broadcast_to(LON0 + (GX0 + np.arange(hx) * 2 + 1 + du) / KX, (hz, hx))
+            jx, jy = to_jtsk.transform(lo, la)
+            fc = (jx - x0) / 5
+            fr = (y1 - jy) / 5
+            ok = (fc >= 0) & (fr >= 0) & (fc < mosaic.shape[1] - 1) & (fr < mosaic.shape[0] - 1)
+            c0 = np.where(ok, np.floor(fc), 0).astype(int)
+            r0 = np.where(ok, np.floor(fr), 0).astype(int)
+            tc, tr = fc - c0, fr - r0
+            v = (mosaic[r0, c0] * (1 - tc) * (1 - tr) + mosaic[r0, c0 + 1] * tc * (1 - tr) + mosaic[r0 + 1, c0] * (1 - tc) * tr + mosaic[r0 + 1, c0 + 1] * tc * tr)
+            good = ok & ~np.isnan(v)
+            acc[good] += v[good]
+            cnt[good] += 1
+    has = cnt > 0
+    elev[has] = acc[has] / cnt[has]
+    print(f"terrain: DMR 4G for {has.mean() * 100:.1f} % of the map, from {len(sheets)} sheets")
+
 wat = W8.reshape(hz, 2, hx, 2).max(axis=(1, 3)) == 1
 base = float(np.median(elev[wat & (elev > 100)]))
 print("river level", base)

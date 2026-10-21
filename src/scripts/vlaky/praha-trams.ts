@@ -306,9 +306,13 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 			else cells.set(c, [xs[k], zs[k], v]);
 		}
 	}
+	// the height at a point: the mean of the tracks within 1.5 units, so that tracks side by side (profiled each on its
+	// own, some of them short) lie at one height; else the nearest within two units
 	return (x: number, z: number) => {
-		let best = 4; // within two units
+		let best = 4;
 		let v = NaN;
+		let sum = 0;
+		let n = 0;
 		const gx = Math.floor(x / 2);
 		const gz = Math.floor(z / 2);
 		for (let a = -1; a <= 1; a++) {
@@ -317,6 +321,10 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 				if (!list) continue;
 				for (let k = 0; k < list.length; k += 3) {
 					const d = (list[k] - x) ** 2 + (list[k + 1] - z) ** 2;
+					if (d < 2.25) {
+						sum += list[k + 2];
+						n++;
+					}
 					if (d < best) {
 						best = d;
 						v = list[k + 2];
@@ -324,7 +332,7 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 				}
 			}
 		}
-		return v;
+		return n ? Math.round((sum / n) * 20) / 20 : v;
 	};
 }
 
