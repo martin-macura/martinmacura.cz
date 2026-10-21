@@ -6,6 +6,7 @@ import type { Layout } from "./rails";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { createTraffic } from "./praha-traffic";
+import { createTrams, parseTrams, type TramData, tramBoxes } from "./praha-trams";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
 import type { Chunk, Extras, World } from "./world";
 
@@ -69,12 +70,16 @@ const gunzip = async (url: string) => {
 };
 
 export async function loadPraha(url: string): Promise<World> {
-	// the streets as lines are a bonus: without them the raster draws them
-	const [buf, roads] = await Promise.all([gunzip(url), gunzip(url.replace(/\.dat$/, "-roads.dat")).catch(() => null)]);
-	return makePraha(buf, roads ? parseRoads(roads) : null);
+	// the streets as lines and the trams are a bonus: without the lines the raster draws the streets
+	const [buf, roads, trams] = await Promise.all([
+		gunzip(url),
+		gunzip(url.replace(/\.dat$/, "-roads.dat")).catch(() => null),
+		gunzip(url.replace(/\.dat$/, "-tram.dat")).catch(() => null),
+	]);
+	return makePraha(buf, roads ? parseRoads(roads) : null, trams ? parseTrams(trams) : null);
 }
 
-function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
+function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | null): World {
 	const dv = new DataView(buf);
 	// a map of the whole city says where its grid lies (and starts with 0); the older one is centred on (0, 0)
 	const placed = dv.getUint16(0, true) === 0;
@@ -222,6 +227,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 			}
 			// the streets as lines, where they are not on a bridge over the water or cut by the railway
 			if (lines) roadBoxes(roads, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
+			// the tram rails and stops, up close
+			if (trams && !far) tramBoxes(trams, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
 
 			// the piers of the bridges
 			for (let iz = 0; iz < CH; iz += 2) {
@@ -298,7 +305,29 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 			}
 			if (Math.floor((CHARLES.from[0] + CHARLES.to[0]) / 2 / CH) === cx && Math.floor((CHARLES.from[1] + CHARLES.to[1]) / 2 / CH) === cz) charlesBridge(add, lamp);
 
-			// --- the houses
+			// --- the houses, out of the way of the trams: a footprint drawn too big must not swallow their street
+			const trackSegs = trams?.trackByChunk.get(cx * 1000 + cz) ?? [];
+			const onTrack = (x: number, z: number, w: number, d: number, ang: number) => {
+				if (!trams) return false;
+				const ca = Math.cos(ang);
+				const sa = Math.sin(ang);
+				for (const i of trackSegs) {
+					const ax = trams.tx[i] - x;
+					const az = trams.tz[i] - z;
+					const bx = trams.tx[i + 1] - x;
+					const bz = trams.tz[i + 1] - z;
+					const r = (w + d) / 2 + 1;
+					if (Math.min(ax, bx) > r || Math.max(ax, bx) < -r || Math.min(az, bz) > r || Math.max(az, bz) < -r) continue;
+					const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5));
+					for (let k = 0; k <= n; k++) {
+						const px = ax + ((bx - ax) * k) / n;
+						const pz = az + ((bz - az) * k) / n;
+						// into the frame of the house
+						if (Math.abs(px * ca + pz * sa) < w / 2 + 0.45 && Math.abs(-px * sa + pz * ca) < d / 2 + 0.45) return true;
+					}
+				}
+				return false;
+			};
 			const farFromSights = (x: number, z: number) => {
 				for (const l of LANDMARKS) if (Math.hypot(x - l.x, z - l.z) < l.clear) return false;
 				return true;
@@ -312,7 +341,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 				const ang = (data.houses[o + 4] / 256) * Math.PI;
 				const metres = data.houses[o + 5];
 				const kind = data.houses[o + 6];
-				if (!farFromSights(x, z)) continue;
+				if (!farFromSights(x, z) || onTrack(x, z, w, d, ang)) continue;
 				const ca = Math.cos(ang);
 				const sa = Math.sin(ang);
 				let gmax = 0;
@@ -415,13 +444,18 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 		tower(CHARLES_LEN * 0.27 - 4.4, 2.2, 3.8, 0x6b3f2e);
 	}
 
-	/** cars on the streets, when the streets came as lines */
+	/** cars on the streets, when the streets came as lines, and the trams by the timetable */
 	function createExtras(scene: Scene, railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): Extras {
-		if (!roads) return { simulate() {}, pose() {} };
 		const columnH = columns(railDist);
 		// on the road, or on the deck of a bridge over the water
 		const groundAt = (x: number, z: number) => (isWater(x, z) ? 0.4 : columnH(x, z) + 0.07);
-		return createTraffic(scene, roads, groundAt, (x, z) => isWater(x, z) || roadOK(x, z));
+		const all: Extras[] = [];
+		if (roads) all.push(createTraffic(scene, roads, groundAt, (x, z) => isWater(x, z) || roadOK(x, z)));
+		if (trams) all.push(createTrams(scene, trams, groundAt));
+		return {
+			simulate: (dt, focus) => all.forEach((e) => e.simulate(dt, focus)),
+			pose: () => all.forEach((e) => e.pose()),
+		};
 	}
 
 	return {

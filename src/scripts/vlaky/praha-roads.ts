@@ -113,9 +113,58 @@ const THICK = [0, 0.05, 0.06, 0.06];
 const LIFT = [0, 0.035, 0.04, 0.04];
 
 /**
- * the streets of chunk (cx, cz) as boxes: each segment walked in short steps, which become one box for as long as the
- * ground under them stays at one height; a square at every bend closes the joint
+ * walks the segment (x1, z1) - (x2, z2) in short steps and hands over the part of it inside chunk (cx, cz) as runs:
+ * one run for as long as the ground under it stays at one height and nothing says to skip it
  */
+export function walkSegment(
+	x1: number,
+	z1: number,
+	x2: number,
+	z2: number,
+	cx: number,
+	cz: number,
+	ground: (x: number, z: number) => number,
+	skip: (x: number, z: number) => boolean,
+	run: (x: number, z: number, len: number, h: number, ry: number) => void,
+) {
+	const dx = x2 - x1;
+	const dz = z2 - z1;
+	const len = Math.hypot(dx, dz);
+	if (len < 1e-4) return;
+	const ux = dx / len;
+	const uz = dz / len;
+	const ry = -Math.atan2(uz, ux);
+	const n = Math.max(1, Math.ceil(len / 0.5));
+	const step = len / n;
+	let runFrom = -1;
+	let runH = 0;
+	const flush = (to: number) => {
+		if (runFrom < 0) return;
+		const m = ((runFrom + to) / 2) * step;
+		run(x1 + ux * m, z1 + uz * m, (to - runFrom) * step, runH, ry);
+		runFrom = -1;
+	};
+	for (let k = 0; k < n; k++) {
+		const t = (k + 0.5) * step;
+		const x = x1 + ux * t;
+		const z = z1 + uz * t;
+		if (!inChunk(x, z, cx, cz) || skip(x, z)) {
+			flush(k);
+			continue;
+		}
+		const h = ground(x, z);
+		if (runFrom >= 0 && h !== runH) flush(k);
+		if (runFrom < 0) {
+			runFrom = k;
+			runH = h;
+		}
+	}
+	flush(n);
+}
+
+export const inChunk = (x: number, z: number, cx: number, cz: number) => Math.floor(x / CH) === cx && Math.floor(z / CH) === cz;
+
+/** the streets of chunk (cx, cz) as boxes along the lines, with a square at every bend to close the joint */
 export function roadBoxes(
 	net: RoadNet,
 	cx: number,
@@ -126,55 +175,17 @@ export function roadBoxes(
 ) {
 	const segs = net.byChunk.get(cx * 1000 + cz);
 	if (!segs) return;
-	const inside = (x: number, z: number) => Math.floor(x / CH) === cx && Math.floor(z / CH) === cz;
-	const STEP = 0.5;
 	for (const i of segs) {
 		const c = net.cls[net.segEdge[i]];
+		const w = WIDTH[c];
 		const x1 = net.px[i];
 		const z1 = net.pz[i];
-		const dx = net.px[i + 1] - x1;
-		const dz = net.pz[i + 1] - z1;
-		const len = Math.hypot(dx, dz);
-		if (len < 1e-4) continue;
-		const ux = dx / len;
-		const uz = dz / len;
-		const ry = -Math.atan2(uz, ux);
-		const w = WIDTH[c];
-		const n = Math.max(1, Math.ceil(len / STEP));
-		const step = len / n;
-		// a run of steps at one height becomes one box
-		let runFrom = -1;
-		let runH = 0;
-		const flush = (to: number) => {
-			if (runFrom < 0) return;
-			const t0 = runFrom * step;
-			const t1 = to * step;
-			const m = (t0 + t1) / 2;
-			add(t1 - t0, THICK[c], w, COLOR[c], x1 + ux * m, runH + LIFT[c], z1 + uz * m, ry);
-			runFrom = -1;
-		};
-		for (let k = 0; k < n; k++) {
-			const t = (k + 0.5) * step;
-			const x = x1 + ux * t;
-			const z = z1 + uz * t;
-			if (!inside(x, z) || skip(x, z)) {
-				flush(k);
-				continue;
-			}
-			const h = ground(x, z);
-			if (runFrom >= 0 && h !== runH) flush(k);
-			if (runFrom < 0) {
-				runFrom = k;
-				runH = h;
-			}
-		}
-		flush(n);
+		const x2 = net.px[i + 1];
+		const z2 = net.pz[i + 1];
+		walkSegment(x1, z1, x2, z2, cx, cz, ground, skip, (x, z, len, h, ry) => add(len, THICK[c], w, COLOR[c], x, h + LIFT[c], z, ry));
+		const ry = -Math.atan2(z2 - z1, x2 - x1);
 		// the joint at the start of the segment (the ends of the edges are joints too)
-		if (inside(x1, z1) && !skip(x1, z1)) add(w, THICK[c], w, COLOR[c], x1, ground(x1, z1) + LIFT[c], z1, ry);
-		if (i + 2 === net.start[net.segEdge[i] + 1]) {
-			const x2 = net.px[i + 1];
-			const z2 = net.pz[i + 1];
-			if (inside(x2, z2) && !skip(x2, z2)) add(w, THICK[c], w, COLOR[c], x2, ground(x2, z2) + LIFT[c], z2, ry);
-		}
+		if (inChunk(x1, z1, cx, cz) && !skip(x1, z1)) add(w, THICK[c], w, COLOR[c], x1, ground(x1, z1) + LIFT[c], z1, ry);
+		if (i + 2 === net.start[net.segEdge[i] + 1] && inChunk(x2, z2, cx, cz) && !skip(x2, z2)) add(w, THICK[c], w, COLOR[c], x2, ground(x2, z2) + LIFT[c], z2, ry);
 	}
 }

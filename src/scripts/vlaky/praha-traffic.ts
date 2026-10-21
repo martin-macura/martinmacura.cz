@@ -128,11 +128,12 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 
 	/** puts the car on a random street of a random chunk in the view */
 	function spawn(car: Car, f: Focus) {
-		for (let tries = 0; tries < 8; tries++) {
+		for (let tries = 0; tries < 12; tries++) {
 			const cx = Math.floor((f.x + (rand() * 2 - 1) * f.r) / CH);
 			const cz = Math.floor((f.z + (rand() * 2 - 1) * f.r) / CH);
 			const segs = net.byChunk.get(cx * 1000 + cz);
-			if (!segs) continue;
+			// a chunk with few streets gets few cars, or its one road would jam
+			if (!segs || rand() * 120 > segs.length) continue;
 			const e = net.segEdge[segs[Math.floor(rand() * segs.length)]];
 			if (!ok(e)) continue;
 			car.e = e;
@@ -167,7 +168,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		shown = !f.far;
 		if (!shown) return;
 		// the denser the view, the more cars, up to the pool
-		const want = Math.min(MAX, Math.round((f.r * f.r) / 8));
+		const want = Math.min(MAX, Math.round((f.r * f.r) / 24));
 		for (let i = 0; i < MAX; i++) {
 			const car = cars[i];
 			if (i >= want) {

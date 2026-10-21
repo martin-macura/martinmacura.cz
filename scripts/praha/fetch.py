@@ -2,8 +2,10 @@
 """Step 1 of the Prague bake: download the OpenStreetMap layers and the terrain tiles into scripts/praha/.cache.
 
 OpenStreetMap data: (c) OpenStreetMap contributors, ODbL. Terrain: Mapzen/AWS terrain tiles (terrarium), see https://registry.opendata.aws/terrain-tiles/
-Run once; later steps read the cache, so the network is not needed again."""
-import json, math, os, sys, time, urllib.parse, urllib.request
+Timetable: PID / ROPID, CC BY 4.0, https://pid.cz/o-systemu/opendata/ (into .cache*/gtfs, for bake_trams.py)
+Run once; later steps read the cache, so the network is not needed again.
+The steps after it: bake.py (praha.dat), bake_roads.py (praha-roads.dat), bake_trams.py (praha-tram.dat)."""
+import io, json, math, os, sys, time, urllib.parse, urllib.request, zipfile
 
 from common import CACHE, FULL, S, N, W, E
 
@@ -90,4 +92,12 @@ for tx in range(int(x0), int(x1) + 1):
             with urllib.request.urlopen(req, timeout=60) as r, open(path, "wb") as f:
                 f.write(r.read())
             print("tile", tx, ty, flush=True)
+
+# the timetable of the trams: the whole PID feed, about 50 MB, of which the trams are a small part
+gtfs = os.path.join(CACHE, "gtfs")
+if not os.path.exists(os.path.join(gtfs, "stop_times.txt")):
+    req = urllib.request.Request("https://data.pid.cz/PID_GTFS.zip", headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        zipfile.ZipFile(io.BytesIO(r.read())).extractall(gtfs)
+    print("timetable", flush=True)
 print("done")
