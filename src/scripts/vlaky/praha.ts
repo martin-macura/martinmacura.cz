@@ -6,7 +6,7 @@ import type { Scene } from "three";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { createTraffic } from "./praha-traffic";
-import { createTrams, lineBoxes, parseTrams, TRAIN, TRAM, type TramData } from "./praha-trams";
+import { createTrams, lineBoxes, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
 import type { Chunk, Extras, World } from "./world";
 
@@ -93,6 +93,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		return ix >= 0 && iz >= 0 && ix < gw / 2 && iz < gh / 2 ? data.steps[iz * (gw / 2) + ix] : 0;
 	};
 	const hillHeight = (x: number, z: number) => stepAt(x, z) * STEP;
+	// the railway runs at a height of its own, smooth where the terrain goes in steps
+	const bed = trains ? railProfile(trains, hillHeight, (x, z) => isWater(x, z)) : undefined;
 
 	function initWater(carves: [number, number, number][]) {
 		for (const [cx, cz, r] of carves) {
@@ -200,7 +202,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			// the tram rails and stops, up close
 			if (trams) lineBoxes(trams, TRAM, cx, cz, far, columnH, isWater, (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too
-			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, columnH, isWater, () => false, add);
+			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, columnH, isWater, () => false, add, bed);
 
 			// the piers of the bridges
 			for (let iz = 0; iz < CH; iz += 2) {
@@ -446,7 +448,14 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		const all: Extras[] = [];
 		if (roads) all.push(createTraffic(scene, roads, groundAt, (x, z) => isWater(x, z) || roadOK(x, z)));
 		if (trams) all.push(createTrams(scene, trams, TRAM, groundAt));
-		if (trains) all.push(createTrams(scene, trains, TRAIN, (x, z) => (isWater(x, z) ? 0.4 : columnH(x, z))));
+		if (trains) {
+			all.push(
+				createTrams(scene, trains, TRAIN, (x, z) => {
+					const h = bed ? bed(x, z) : NaN;
+					return Number.isNaN(h) ? (isWater(x, z) ? 0.4 : columnH(x, z)) : h;
+				}),
+			);
+		}
 		return {
 			simulate: (dt, focus) => all.forEach((e) => e.simulate(dt, focus)),
 			pose: () => all.forEach((e) => e.pose()),

@@ -201,6 +201,118 @@ export function parseTrams(buf: ArrayBuffer): TramData {
 }
 
 /**
+ * the height of a railway: the terrain is in steps of 8 m, which a train cannot climb, so along every track the hills
+ * narrower than some 1.2 km are taken away, the rest averaged over some 150 m and the grade held to 2 %; a station
+ * stays on its land and a bridge above the water. Where the land then lies higher the track runs
+ * in a tunnel (the hill hides it), where it lies lower on an embankment, and over the water on a bridge. Returns the
+ * height of the bed near (x, z), or NaN away from the railway.
+ */
+export function railProfile(data: TramData, terrain: (x: number, z: number) => number, isWater: (x: number, z: number) => boolean) {
+	const GRADE = 0.012; // height units per unit along: 2 %
+	const WINDOW = 25; // samples to each side, for the average
+	const HILL = 100; // samples to each side: a hill narrower than twice this (some 1.2 km) is gone through, not over
+	const BRIDGE = 0.5; // the least height over the water
+	// the stations: a train stands at one on the land, never in a tunnel
+	const stations = new Map<number, [number, number][]>();
+	const skey = (x: number, z: number) => Math.floor(x / 16) * 100000 + Math.floor(z / 16);
+	for (const st of data.stops) {
+		const k = skey(st.x, st.z);
+		const list = stations.get(k);
+		if (list) list.push([st.x, st.z]);
+		else stations.set(k, [[st.x, st.z]]);
+	}
+	const atStation = (x: number, z: number) => {
+		for (let a = -1; a <= 1; a++) {
+			for (let b = -1; b <= 1; b++) {
+				for (const [sx, sz] of stations.get(skey(x + a * 16, z + b * 16)) ?? []) if ((sx - x) ** 2 + (sz - z) ** 2 < 64) return true;
+			}
+		}
+		return false;
+	};
+	/** the least or the most of `v` within `w` to each side, for every index */
+	const slide = (v: number[], w: number, most: boolean) =>
+		v.map((_, k) => {
+			let r = most ? -Infinity : Infinity;
+			for (let j = Math.max(0, k - w); j <= Math.min(v.length - 1, k + w); j++) r = most ? Math.max(r, v[j]) : Math.min(r, v[j]);
+			return r;
+		});
+	const cells = new Map<number, number[]>(); // x, z, height of the samples in each cell of 2 x 2
+	const key = (x: number, z: number) => (Math.floor(x / 2) + 5000) * 10000 + Math.floor(z / 2) + 5000;
+	const { tx, tz } = data;
+	let from = 0;
+	for (let i = 0; i <= tx.length; i++) {
+		if (i < tx.length && !Number.isNaN(tx[i])) continue;
+		// one track: tx[from .. i), sampled every unit
+		const xs: number[] = [];
+		const zs: number[] = [];
+		for (let k = from; k < i - 1; k++) {
+			const len = Math.hypot(tx[k + 1] - tx[k], tz[k + 1] - tz[k]);
+			const n = Math.max(1, Math.ceil(len));
+			for (let j = 0; j < n; j++) {
+				xs.push(tx[k] + ((tx[k + 1] - tx[k]) * j) / n);
+				zs.push(tz[k] + ((tz[k + 1] - tz[k]) * j) / n);
+			}
+		}
+		if (i - from > 0) {
+			xs.push(tx[i - 1]);
+			zs.push(tz[i - 1]);
+		}
+		from = i + 1;
+		const n = xs.length;
+		if (!n) continue;
+		const raw = xs.map((x, k) => terrain(x, zs[k]));
+		// the hills narrower than a tunnel taken away (the least land around, then the most of that: a plateau stays),
+		// then a running average
+		const t = slide(slide(raw, HILL, false), HILL, true);
+		const pre = [0];
+		for (let k = 0; k < n; k++) pre.push(pre[k] + t[k]);
+		const h = t.map((_, k) => {
+			const a = Math.max(0, k - WINDOW);
+			const b = Math.min(n, k + WINDOW + 1);
+			return (pre[b] - pre[a]) / (b - a);
+		});
+		// the grade held both ways
+		for (let k = 1; k < n; k++) h[k] = Math.min(Math.max(h[k], h[k - 1] - GRADE), h[k - 1] + GRADE);
+		for (let k = n - 2; k >= 0; k--) h[k] = Math.min(Math.max(h[k], h[k + 1] - GRADE), h[k + 1] + GRADE);
+		// a station stands on its land and a bridge above the water; the track rises to them at the same grade
+		for (let k = 0; k < n; k++) {
+			if (isWater(xs[k], zs[k])) h[k] = Math.max(h[k], BRIDGE);
+			else if (atStation(xs[k], zs[k])) h[k] = Math.max(h[k], raw[k]);
+		}
+		for (let k = 1; k < n; k++) h[k] = Math.max(h[k], h[k - 1] - GRADE);
+		for (let k = n - 2; k >= 0; k--) h[k] = Math.max(h[k], h[k + 1] - GRADE);
+		for (let k = 0; k < n; k++) {
+			const c = key(xs[k], zs[k]);
+			const list = cells.get(c);
+			// quantized, so that the boxes along a gentle slope still merge into runs
+			const v = Math.round(h[k] * 20) / 20;
+			if (list) list.push(xs[k], zs[k], v);
+			else cells.set(c, [xs[k], zs[k], v]);
+		}
+	}
+	return (x: number, z: number) => {
+		let best = 4; // within two units
+		let v = NaN;
+		const gx = Math.floor(x / 2);
+		const gz = Math.floor(z / 2);
+		for (let a = -1; a <= 1; a++) {
+			for (let b = -1; b <= 1; b++) {
+				const list = cells.get((gx + a + 5000) * 10000 + gz + b + 5000);
+				if (!list) continue;
+				for (let k = 0; k < list.length; k += 3) {
+					const d = (list[k] - x) ** 2 + (list[k + 1] - z) ** 2;
+					if (d < best) {
+						best = d;
+						v = list[k + 2];
+					}
+				}
+			}
+		}
+		return v;
+	};
+}
+
+/**
  * the tracks and the stops of chunk (cx, cz). A tramway is a pair of rails in the street; a railway is ballast with
  * sleepers and rails, a steel deck over the water, and a station is a platform on each side of the track. Far away
  * only the ballast is drawn, so that the railway still shows through the whole city.
@@ -215,12 +327,19 @@ export function lineBoxes(
 	isWater: (x: number, z: number) => boolean,
 	skip: (x: number, z: number) => boolean,
 	add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void,
+	/** a railway: the height of its bed (railProfile) */
+	bed?: (x: number, z: number) => number,
 ) {
 	const { tx, tz } = data;
 	if (far && !style.rail) return;
 	// a tramway stops at the water (the bridge carries the street); a railway crosses it on a deck of its own
 	const tramSkip = (x: number, z: number) => isWater(x, z) || skip(x, z);
-	const railGround = (x: number, z: number) => (isWater(x, z) ? 0.6 : ground(x, z));
+	const railGround = (x: number, z: number) => {
+		const h = bed ? bed(x, z) : NaN;
+		return Number.isNaN(h) ? ground(x, z) : h;
+	};
+	// in a tunnel: the hill stands well above the bed
+	const railSkip = (x: number, z: number) => skip(x, z) || ground(x, z) > railGround(x, z) + 0.7;
 	for (const i of data.trackByChunk.get(cx * 1000 + cz) ?? []) {
 		const dx = tx[i + 1] - tx[i];
 		const dz = tz[i + 1] - tz[i];
@@ -234,10 +353,16 @@ export function lineBoxes(
 			}
 			continue;
 		}
-		walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, railGround, skip, (x, z, l, h, ry) => {
-			if (h === 0.6) add(l + 0.05, 0.25, 1.8, COLORS.steel, x, h - 0.1, z, ry); // the deck of a bridge
-			else if (far) add(l + 0.05, 0.14, 2.8, 0x8f9aa8, x, h + 0.07, z, ry); // from afar a wide steel band, so that it reads among the dark streets
-			else add(l + 0.05, 0.12, 1.6, COLORS.ballast, x, h + 0.06, z, ry);
+		walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, railGround, railSkip, (x, z, l, h, ry) => {
+			if (isWater(x, z)) add(l + 0.05, 0.25, 1.8, COLORS.steel, x, h - 0.1, z, ry); // the deck of a bridge
+			else {
+				// an embankment where the land lies lower than the bed
+				const g = ground(x, z);
+				if (h > g + 0.1) add(l + 0.05, h - g, far ? 2.8 : 2.2, 0x8a7a5c, x, g + (h - g) / 2, z, ry);
+				// from afar a wide steel band, so that it reads among the dark streets
+				if (far) add(l + 0.05, 0.14, 2.8, 0x8f9aa8, x, h + 0.07, z, ry);
+				else add(l + 0.05, 0.12, 1.6, COLORS.ballast, x, h + 0.06, z, ry);
+			}
 			if (far) return;
 			// sleepers across, about every 0.7 units
 			const n = Math.max(1, Math.round(l / 0.7));
@@ -251,7 +376,7 @@ export function lineBoxes(
 		if (far) continue;
 		for (const o of [-0.42, 0.42]) {
 			const [ox, oz] = side(o);
-			walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, railGround, skip, (x, z, l, h, ry) => add(l + 0.05, 0.09, 0.09, COLORS.steel, x, h + 0.2, z, ry));
+			walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, railGround, railSkip, (x, z, l, h, ry) => add(l + 0.05, 0.09, 0.09, COLORS.steel, x, h + 0.2, z, ry));
 		}
 	}
 	if (far) return;
@@ -273,7 +398,9 @@ export function lineBoxes(
 		for (const o of [-1.55, 1.55]) {
 			const px = s.x - sn * o;
 			const pz = s.z + c * o;
-			const h = ground(px, pz);
+			const h = railGround(s.x, s.z);
+			const g = ground(px, pz);
+			if (h > g + 0.05) add(14, h - g, 1.3, COLORS.platform, px, g + (h - g) / 2, pz, ry);
 			add(14, 0.35, 1.3, COLORS.platform, px, h + 0.17, pz, ry);
 			add(14, 0.36, 0.1, COLORS.yellow, px - sn * -Math.sign(o) * 0.6, h + 0.18, pz + c * -Math.sign(o) * 0.6, ry);
 			for (const t of [-3, 0, 3]) add(0.1, 1.2, 0.1, COLORS.dark, px + c * t + sn * Math.sign(o) * 0.3, h + 0.9, pz + sn * t - c * Math.sign(o) * 0.3, ry);
