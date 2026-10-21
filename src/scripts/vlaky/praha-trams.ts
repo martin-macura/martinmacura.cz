@@ -21,10 +21,34 @@ export interface LineStyle {
 	body: number;
 	roof: number;
 	max: number; // at most this many at once
+	title: string; // on the card of one
+	places: boolean; // its stops have their names written over the scene
+	hidden?: boolean; // seen only where its track is laid (the metro, out of its tunnels)
 }
-export const TRAM: LineStyle = { rail: false, sections: 3, section: 1.7, width: 0.46, height: 0.5, body: 0xd8322a, roof: 0xf2ead8, max: 900 };
+export const TRAM: LineStyle = { rail: false, sections: 3, section: 1.7, width: 0.46, height: 0.5, body: 0xd8322a, roof: 0xf2ead8, max: 900, title: "TRAMVAJ", places: true };
 /** a CityElefant: four double-deck cars of about 20 m */
-export const TRAIN: LineStyle = { rail: true, sections: 4, section: 3.3, width: 0.62, height: 0.78, body: 0x2f62c8, roof: 0xf2f2f2, max: 300 };
+export const TRAIN: LineStyle = { rail: true, sections: 4, section: 3.3, width: 0.62, height: 0.78, body: 0x2f62c8, roof: 0xf2f2f2, max: 300, title: "VLAK", places: true };
+/** an articulated bus of 18 m, in the streets with the cars */
+export const BUS: LineStyle = { rail: false, sections: 2, section: 1.5, width: 0.44, height: 0.5, body: 0xb8262c, roof: 0xd9dde2, max: 1500, title: "AUTOBUS", places: false };
+/** a train of five cars of the metro, silver and blue, seen where it comes out of the ground */
+export const METRO: LineStyle = { rail: true, sections: 5, section: 3.2, width: 0.6, height: 0.62, body: 0xa9b4bf, roof: 0x2f4a7a, max: 80, title: "METRO", places: true, hidden: true };
+
+/** whether (x, z) is within `r` of a track of the line */
+export function nearTrack(data: TramData, r = 1) {
+	const { tx, tz, trackByChunk } = data;
+	return (x: number, z: number) => {
+		for (const i of trackByChunk.get(Math.floor(x / CH) * 1000 + Math.floor(z / CH)) ?? []) {
+			const ax = tx[i];
+			const az = tz[i];
+			const dx = tx[i + 1] - ax;
+			const dz = tz[i + 1] - az;
+			const l2 = dx * dx + dz * dz || 1;
+			const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+			if ((ax + dx * t - x) ** 2 + (az + dz * t - z) ** 2 < r * r) return true;
+		}
+		return false;
+	};
+}
 
 export interface TramData {
 	routes: string[];
@@ -514,6 +538,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 	const dummy = new Object3D();
 	let focus: Focus | null = null;
 	const lamps = createLamps(scene, max);
+	const seen = style.hidden ? nearTrack(data) : () => true;
 
 	// the vehicles drawn in the last frame, by the middle of their middle car, for picking one by a click
 	const drawn: { trip: number; offset: number; x: number; y: number; z: number }[] = [];
@@ -535,7 +560,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 
 	// the names of the stations (or the stops): one in the middle of the platforms of the same name, unless they lie apart
 	const places: Place[] = [];
-	{
+	if (style.places) {
 		const groups: { name: string; x: number; z: number; n: number }[] = [];
 		for (const st of data.stops) {
 			// "Praha hlavní nádraží" is Hlavní nádraží here, "Praha-Libeň" Libeň
@@ -551,6 +576,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 		for (const g of groups) {
 			const x = g.x / g.n;
 			const z = g.z / g.n;
+			if (!seen(x, z)) continue;
 			places.push({ x, y: groundAt(x, z) + (style.rail ? 1.6 : 0.8), z, name: g.name, rank: style.rail ? 0 : 1 });
 		}
 	}
@@ -587,6 +613,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 				for (let k = 0; k < sections; k++) {
 					const m = Math.max(first, front - (k + 0.5) * section * M);
 					onShape(p.shape, m);
+					if (!seen(at.x, at.z)) continue; // this car is still in the tunnel
 					// over the water a train runs on the deck of its bridge
 					const y = groundAt(at.x, at.z) + (style.rail ? 0.2 : 0);
 					const yaw = Math.atan2(at.dx, at.dz);
@@ -665,7 +692,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 			if (next < p.arr.length) lines.push(`příští: ${stopName(p, next)} v ${clock(start + p.arr[next])}`);
 			const last = p.arr.length - 1;
 			if (stopName(p, last) && next !== last) lines.push(`konečná v ${clock(start + p.arr[last])}`);
-			return { ...pickedAt, title: `${style.rail ? "VLAK" : "TRAMVAJ"} ${data.routes[p.route]}`, lines };
+			return { ...pickedAt, title: `${style.title} ${data.routes[p.route]}`, lines };
 		},
 	};
 }

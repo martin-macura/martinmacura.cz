@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Step 2c: the trams and the trains of Prague by the timetable: public/vlaky/praha-tram.dat and praha-rail.dat (gzip).
+"""Step 2c: the trams, trains, buses and the metro of Prague by the timetable: public/vlaky/praha-tram.dat,
+praha-rail.dat, praha-bus.dat and praha-metro.dat (gzip).
 
   python3 bake_trams.py        the trams (route_type 0)
   python3 bake_trams.py rail   the trains (route_type 2): the shapes are cut to the map, a train stands at least
                                25 s at a station, the stations lie on the track and every one gets its name
+  python3 bake_trams.py bus    the city buses and trolleybuses (route_type 3 and 11, lines 100-299 and the night ones
+                               900-999): no tracks, they run in the streets
+  python3 bake_trams.py metro  the metro (route_type 1): tracks only where it runs in the open (OpenStreetMap
+                               railway=subway, not in a tunnel nor covered; .cache-full/subway.json); the page shows a
+                               train only there
 
 Reads the PID timetable (GTFS) unzipped into .cache-full/gtfs (or .cache/gtfs), from https://data.pid.cz/PID_GTFS.zip.
 The feed covers two weeks; the scene must work long after that, so one real day of the feed is baked for each kind of
@@ -25,10 +31,19 @@ from common import *
 
 sys.setrecursionlimit(100000)
 
-RAIL = len(sys.argv) > 1 and sys.argv[1] == "rail"
+MODE = sys.argv[1] if len(sys.argv) > 1 else "tram"
+RAIL = MODE == "rail"
 GTFS = os.path.join(CACHE, "gtfs")
-OUT = os.path.join(HERE, "..", "..", "public", "vlaky", "praha-rail.dat" if RAIL else "praha-tram.dat")
+OUT = os.path.join(HERE, "..", "..", "public", "vlaky", f"praha-{MODE}.dat")
 MIN_DWELL = 25 if RAIL else 0
+TYPES = {"tram": {"0"}, "rail": {"2"}, "bus": {"3", "11"}, "metro": {"1"}}[MODE]
+def wanted(r):
+    if r["route_type"] not in TYPES:
+        return False
+    if MODE != "bus":
+        return True
+    n = r["route_short_name"]
+    return r["route_type"] == "11" or (n.isdigit() and (100 <= int(n) < 300 or 900 <= int(n) < 1000))
 rows = lambda name: csv.DictReader(open(os.path.join(GTFS, name), encoding="utf-8-sig", newline=""))
 secs = lambda t: (lambda h, m, s: h * 3600 + m * 60 + s)(*map(int, t.split(":")))
 
@@ -60,7 +75,7 @@ print("days:", *chosen)
 services = [running(d) for d in chosen]
 
 # --- the lines, their trips, their stops and their shapes
-routes = {r["route_id"]: r["route_short_name"] for r in rows("routes.txt") if r["route_type"] == ("2" if RAIL else "0")}
+routes = {r["route_id"]: r["route_short_name"] for r in rows("routes.txt") if wanted(r)}
 trips = {}
 for r in rows("trips.txt"):
     if r["route_id"] in routes:
@@ -176,15 +191,43 @@ cellk = lambda x, z: (int(math.floor(x * 2)), int(math.floor(z * 2)))
 def covered(x, z):
     i, j = cellk(x, z)
     return any((i + a, j + b) in laid for a in (-1, 0, 1) for b in (-1, 0, 1))
+# the metro is laid only where it runs in the open: near a way of OpenStreetMap that is neither in a tunnel nor covered
+open_cells = None
+if MODE == "metro":
+    import json
+    open_cells = set()
+    for e in json.load(open(os.path.join(CACHE, "subway.json")))["elements"]:
+        t = e.get("tags", {})
+        if t.get("tunnel") in ("yes", "building_passage") or t.get("covered") == "yes" or t.get("service") or "geometry" not in e:
+            continue
+        g = [project(p["lat"], p["lon"]) for p in e["geometry"]]
+        for (x1, z1), (x2, z2) in zip(g, g[1:]):
+            n = max(1, int(math.hypot(x2 - x1, z2 - z1) / 0.5))
+            for k in range(n + 1):
+                open_cells.add(cellk(x1 + (x2 - x1) * k / n, z1 + (z2 - z1) * k / n))
+def out_of_sight(x, z):
+    if open_cells is None:
+        return False
+    i, j = cellk(x, z)
+    return not any((i + a, j + b) in open_cells for a in (-2, -1, 0, 1, 2) for b in (-2, -1, 0, 1, 2))
 tracks = []
-for pts_ in shape_pts:
+def dense(p):
+    """the metro is cut where it goes under: its shapes resampled every unit, so that no segment reaches into a tunnel"""
+    if open_cells is None:
+        return p
+    out_ = [p[0]]
+    for (x1, z1, m1), (x2, z2, m2) in zip(p, p[1:]):
+        n = max(1, int(math.hypot(x2 - x1, z2 - z1)))
+        out_ += [(x1 + (x2 - x1) * k / n, z1 + (z2 - z1) * k / n, m1 + (m2 - m1) * k / n) for k in range(1, n + 1)]
+    return out_
+for pts_ in (map(dense, shape_pts) if MODE != "bus" else []):
     cur = []
     for k in range(len(pts_) - 1):
         (x1, z1, _), (x2, z2, _) = pts_[k], pts_[k + 1]
         L = math.hypot(x2 - x1, z2 - z1)
         n = max(1, int(L / 0.5))
         samples = [(x1 + (x2 - x1) * t / n, z1 + (z2 - z1) * t / n) for t in range(n + 1)]
-        new = not all(covered(x, z) for x, z in samples[1:-1] or samples)
+        new = not all(covered(x, z) or out_of_sight(x, z) for x, z in samples[1:-1] or samples)
         if new:
             if not cur:
                 cur = [(x1, z1)]
