@@ -540,7 +540,7 @@ const SLIDES: Draw[] = [
 			rect(ctx, "#f2f2f2", 5 + i * 15, 35, 7, 1);
 		}
 	},
-	// Softero: five curved petals in a circle (the logo's mark, in blue) and the wordmark
+	// Softero: five petals in a circle, one pointing down (the logo's mark, in its white variant) and the wordmark
 	(ctx) => {
 		const cx = 32;
 		const cy = 16;
@@ -548,17 +548,18 @@ const SLIDES: Draw[] = [
 			for (let x = -9; x <= 9; x++) {
 				const r = Math.hypot(x, y);
 				if (r < 1.8 || r > 8.2) continue;
-				// each petal bends with the radius, which gives the pinwheel look
-				const a = Math.atan2(y, x) - r * 0.16;
-				const k = (((a - Math.PI / 2) / (Math.PI * 0.4)) % 1 + 1) % 1; // 0..1 within one petal's sector
-				const width = 0.08 + 0.22 * Math.sin(((r - 1.8) / 6.4) * Math.PI); // fat in the middle, tapered at the ends
-				if (Math.abs(k - 0.5) < width) rect(ctx, "#2f70ff", cx + x, cy + y, 1, 1);
+				// each petal is symmetric about its own radial axis; the first points straight down (screen y grows downward)
+				const a = Math.atan2(y, x);
+				const k = ((((a - Math.PI / 2) / (Math.PI * 0.4) + 0.5) % 1) + 1) % 1; // 0..1 within one petal's sector, 0.5 on its axis
+				const width = 0.14 + 0.24 * Math.sin(((r - 1.8) / 6.4) * Math.PI); // fat in the middle, tapered at the ends
+				if (Math.abs(k - 0.5) < width) rect(ctx, "#f2f2f2", cx + x, cy + y, 1, 1);
 			}
 		}
 		ctx.fillStyle = "#f2f2f2";
 		ctx.font = '8px "Press Start 2P", monospace';
 		ctx.textBaseline = "top";
 		ctx.fillText("Softero", 4, 27);
+		rect(ctx, "#093cff", 4, 36, 56, 1);
 	},
 ];
 
