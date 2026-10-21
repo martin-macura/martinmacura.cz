@@ -6,7 +6,7 @@ import { InstancedMesh, Mesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, 
 import { inChunk, walkSegment } from "./praha-roads";
 import { createLamps } from "./praha-traffic";
 import { COLORS, glass, unit } from "./util";
-import type { Card, Extras, Focus, Place, ToScreen } from "./world";
+import { type Card, type Extras, type Focus, type Place, type ToScreen, VEHICLES_UP_TO } from "./world";
 
 const CH = 32;
 const M = 6; // metres in a unit
@@ -594,11 +594,13 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 			}
 			const { secs } = prague(now);
 			const reach = focus.r * 1.3;
+			// from afar only the trains and the metro, not the trams and the buses one by one
+			const out = !style.rail && focus.k > VEHICLES_UP_TO;
 			let n = 0;
 			const lit = lamps.begin();
 			drawn.length = 0;
 			pickedAt = null;
-			for (const { trip, offset } of active) {
+			for (const { trip, offset } of out ? [] : active) {
 				if (n >= max * sections) break;
 				const p = patterns[tripPattern[trip]];
 				const tau = secs + offset - tripStart[trip];

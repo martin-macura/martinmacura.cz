@@ -13,7 +13,12 @@ export interface Focus {
 	z: number;
 	r: number;
 	far: boolean;
+	/** the zoom: 1 the first view, more is further out */
+	k: number;
 }
+
+/** zoomed out past this, the cars, the buses and the trams are too small to draw one by one */
+export const VEHICLES_UP_TO = 1.5;
 
 /** what a card next to a picked vehicle says, and where in the world the vehicle is */
 export interface Card {

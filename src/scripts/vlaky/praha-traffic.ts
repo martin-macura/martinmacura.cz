@@ -4,7 +4,7 @@
 import { Color, InstancedMesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
 import type { RoadNet } from "./praha-roads";
 import { COLORS, glow, rng, unit } from "./util";
-import type { Focus } from "./world";
+import { type Focus, VEHICLES_UP_TO } from "./world";
 
 const MAX = 420;
 const SPEED = [0, 1.3, 2, 3]; // units a second, by class
@@ -225,7 +225,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 	let shown = false;
 
 	function simulate(dt: number, f: Focus) {
-		shown = !f.far;
+		shown = !f.far && f.k <= VEHICLES_UP_TO;
 		if (!shown) return;
 		// the denser the view, the more cars, up to the pool
 		const want = Math.min(MAX, Math.round((f.r * f.r) / 24));

@@ -71,7 +71,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	const railDist = railway ? railway.rails.railDist : () => 99;
 	const roadOK = railway ? railway.crossings.roadOK : () => true;
 	const extras = world.createExtras?.(scene, railDist, roadOK);
-	const focus: Focus = { x: world.fit.x, z: world.fit.z, r: world.fit.hx, far: false };
+	const focus: Focus = { x: world.fit.x, z: world.fit.z, r: world.fit.hx, far: false, k: 1 };
 
 	// thousands of boxes would be thousands of draw calls: merge the track, the platforms and the rest of the scenery into one mesh per material
 	const batches = new Map<MeshLambertMaterial, BufferGeometry[]>();
@@ -154,6 +154,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		focus.z = midZ;
 		focus.r = Math.max(maxX - minX, maxZ - minZ) / 2;
 		focus.far = far;
+		focus.k = view.k;
 		const missing: [number, number, number][] = [];
 		for (let cz = cz0; cz <= cz1; cz++) {
 			for (let cx = cx0; cx <= cx1; cx++) {

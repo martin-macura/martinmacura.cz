@@ -375,6 +375,11 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				const place = (lx: number, lz: number): [number, number] => [x + lx * ca - lz * sa, z + lx * sa + lz * ca];
 				let h = clamp(metres / 5.2, 1, 11);
 				if (kind & 1) h = Math.max(h, 2.6);
+				// from afar a house is only its roof on the ground, like on a map; a church keeps its tower to find the way by
+				if (far && !(kind & 1)) {
+					add(w, 0.3, d, kind & 2 || h > 7.5 ? 0x8a8f96 : roof, x, gmax + 0.15, z, ry);
+					continue;
+				}
 				if (gmax > gmin + 0.05) add(w, gmax - gmin, d, wall, x, (gmax + gmin) / 2, z, ry);
 				add(w, h, d, wall, x, gmax + h / 2, z, ry);
 				const flat = kind & 2 || h > 7.5;
