@@ -45,6 +45,9 @@ const ARRIVE_GAP = 1.5; // seconds between parts popping up
 const TRACE_WIDTH = 0.5;
 /** Playback speed of the whole scene, 1 being the original pace. (?t= in dev is in scene seconds.) */
 const SPEED = 1.5;
+/** The finished product first shows this page, then flips through the projects, quickly. Scene seconds. */
+const PAGE_HOLD = 1;
+const SLIDE_TIME = 0.8;
 
 // Flat toy colours on the page's near-black. Swap these to re-skin the whole scene.
 const PALETTE = {
@@ -488,6 +491,14 @@ const BUILDERS: Record<Key, (c: number) => { group: Group; height: number }> = {
 // ---------------------------------------------------------------------------------------------
 // the product: a tiny copy of this page in a chunky browser window
 
+// Slides are placeholders until the real screenshots and the logo exist: swap `draw` for ctx.drawImage of a
+// 64x40 pixelated version. Texts stay ASCII and at most 7 letters (the font is 8px wide).
+const SLIDES: { title: string; sub: string; color: string }[] = [
+	{ title: "DISPO", sub: "dispecink", color: "#3d7bff" },
+	{ title: "AUTO", sub: "autoskola", color: "#2fd487" },
+	{ title: "SOFTERO", sub: "logo", color: "#ff5c4d" },
+];
+
 function buildProduct() {
 	const outer = new Group(); // popped and shrunk by the timeline
 	const g = new Group();
@@ -497,7 +508,7 @@ function buildProduct() {
 	put(box(2.6, 0.5, 1.6, 0xd0d0d0), 0, 0.3, -0.1, g);
 	put(box(0.9, 0.7, 0.4, 0xd0d0d0), 0, 0.75, -0.1, g);
 	// 64x40 texels with the page's own font at its native 8px, so every font pixel is exactly one texel
-	const tex = pixelTexture(64, 40, (ctx) => {
+	const drawPage = (ctx: CanvasRenderingContext2D) => {
 		ctx.fillStyle = "#0c0c0c";
 		ctx.fillRect(0, 0, 64, 40);
 		ctx.fillStyle = "#1c1c1c";
@@ -516,11 +527,42 @@ function buildProduct() {
 		ctx.fillRect(28, 33, 8, 1);
 		ctx.fillRect(40, 33, 3, 1);
 		ctx.fillRect(47, 33, 9, 1);
-	});
+	};
+	const drawSlide = (ctx: CanvasRenderingContext2D, i: number) => {
+		const slide = SLIDES[i];
+		ctx.fillStyle = "#0c0c0c";
+		ctx.fillRect(0, 0, 64, 40);
+		ctx.fillStyle = "#1c1c1c";
+		ctx.fillRect(0, 0, 64, 5);
+		ctx.fillStyle = "#4a4a4a";
+		for (let n = 0; n < 3; n++) ctx.fillRect(2 + n * 3, 2, 1, 1);
+		ctx.fillStyle = slide.color;
+		ctx.fillRect(4, 9, 56, 24);
+		ctx.fillStyle = "#0c0c0c";
+		ctx.fillRect(6, 11, 52, 20);
+		ctx.fillStyle = "#f2f2f2";
+		ctx.font = '8px "Press Start 2P", monospace';
+		ctx.textBaseline = "top";
+		ctx.fillText(slide.title, Math.floor((64 - slide.title.length * 8) / 2), 16);
+		ctx.fillStyle = slide.color;
+		ctx.fillRect(10, 27, 8 + i * 12, 1);
+		ctx.fillStyle = "#8a8a8a";
+		ctx.fillRect(10, 29, 44, 1);
+	};
+	const tex = pixelTexture(64, 40, drawPage);
+	let shown = -1; // -1 is the page itself
+	const show = (i: number) => {
+		if (i === shown) return;
+		shown = i;
+		tex.ctx.clearRect(0, 0, 64, 40);
+		if (i < 0) drawPage(tex.ctx);
+		else drawSlide(tex.ctx, i);
+		tex.texture.needsUpdate = true;
+	};
 	const front = new Mesh(new PlaneGeometry(6.7, 4.2), new MeshBasicMaterial({ map: tex.texture }));
 	front.position.set(0, 3.0, 0.29);
 	g.add(front);
-	return { group: outer, height: 5.6 * PRODUCT_SCALE };
+	return { group: outer, height: 5.6 * PRODUCT_SCALE, show };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -886,7 +928,7 @@ export async function start(canvas: HTMLCanvasElement) {
 		arrive[DEPLOY] = depart[DEPLOY] + paths[DEPLOY].length / speed[DEPLOY];
 		mergeAt = arrive[DEPLOY] - 0.2;
 		productT = mergeAt + MERGE + 0.25;
-		outroAt = productT + 5;
+		outroAt = productT + PAGE_HOLD + SLIDES.length * SLIDE_TIME + 0.3;
 		cycle = outroAt + 0.9 + 0.8;
 	}
 
@@ -959,6 +1001,7 @@ export async function start(canvas: HTMLCanvasElement) {
 		// product: pops out when the parts land, then shrinks away
 		const pr = c - productT;
 		const shrinkOut = 1 - smooth((c - outroAt) / 0.8);
+		product.show(pr < PAGE_HOLD ? -1 : Math.min(SLIDES.length - 1, Math.floor((pr - PAGE_HOLD) / SLIDE_TIME)));
 		const p = pop(pr);
 		const ps = Math.max(0.0001, p * shrinkOut);
 		const wide = ps * (1 + (1 - clamp01(p)) * 0.25);
@@ -1035,7 +1078,7 @@ export async function start(canvas: HTMLCanvasElement) {
 	});
 
 	const staticFrame = frozen !== null || reduced;
-	const staticTime = frozen ?? productT + 2;
+	const staticTime = frozen ?? productT + 0.5;
 	const t0 = performance.now();
 
 	const draw = () => {
