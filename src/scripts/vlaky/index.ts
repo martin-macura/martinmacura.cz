@@ -18,7 +18,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { buildRailScenery, carvePoints, createRails, stationSites, useLayout } from "./rails";
 import { createCrossings } from "./crossings";
 import { CH, fictionWorld } from "./terrain";
-import type { Chunk, World } from "./world";
+import type { Chunk, Focus, World } from "./world";
 import { createTraffic } from "./trains";
 import { box, clamp, COLORS, glass, glow, rng, unit } from "./util";
 
@@ -52,15 +52,28 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	const world = options.world ?? fictionWorld;
 	const { isleX: ISLE_X, isleZ: ISLE_Z, isWater, roadAt, hillHeight } = world;
 	if (world.layout) useLayout(world.layout);
-	world.initWater(carvePoints);
-	const rails = createRails(isWater);
+	// a town with a railway of its own (Prague runs its trains by the timetable) has none of ours
+	const ours = world.railway !== false;
+	world.initWater(ours ? carvePoints : []);
 	box(scene, ISLE_X * 2, 0.3, ISLE_Z * 2, world.ground ?? COLORS.grass, 0, -0.15, 0);
 	box(scene, ISLE_X * 2, 1.4, ISLE_Z * 2, COLORS.soil, 0, -1, 0);
-	const scenery = buildRailScenery(scene, rails, isWater);
-	const sites = stationSites(rails);
-	const crossings = createCrossings(scene, rails, sites, isWater, roadAt);
+	const railway = ours
+		? (() => {
+				const rails = createRails(isWater);
+				const scenery = buildRailScenery(scene, rails, isWater);
+				const sites = stationSites(rails);
+				const crossings = createCrossings(scene, rails, sites, isWater, roadAt);
+				const traffic = createTraffic(scene, rails, scenery, sites, rand);
+				const cars = crossings.attach(traffic.trains);
+				return { rails, crossings, traffic, cars };
+			})()
+		: null;
+	const railDist = railway ? railway.rails.railDist : () => 99;
+	const roadOK = railway ? railway.crossings.roadOK : () => true;
+	const extras = world.createExtras?.(scene, railDist, roadOK);
+	const focus: Focus = { x: world.fit.x, z: world.fit.z, r: world.fit.hx, far: false };
 
-	// thousands of boxes would be thousands of draw calls: merge the track into one mesh per material
+	// thousands of boxes would be thousands of draw calls: merge the track, the platforms and the rest of the scenery into one mesh per material
 	const batches = new Map<MeshLambertMaterial, BufferGeometry[]>();
 	for (const child of [...scene.children]) {
 		if (!(child instanceof Mesh) || child.geometry !== unit || child.userData.dynamic) continue;
@@ -73,13 +86,13 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	}
 	for (const [mat, geos] of batches) scene.add(new Mesh(mergeGeometries(geos), mat));
 
-	const traffic = createTraffic(scene, rails, scenery, sites, rand);
-	const cars = crossings.attach(traffic.trains);
-
 	// --- the town around it is built in chunks, where the camera looks
-	const buildChunk = world.createChunkBuilder(rails.railDist, crossings.roadOK);
-	const chunks = new Map<string, { chunk: Chunk; seen: number }>();
+	const buildChunk = world.createChunkBuilder(railDist, roadOK);
+	const chunks = new Map<string, { chunk: Chunk; seen: number; far: boolean }>();
 	let tick = 0;
+	let far = false; // zoomed out: the town is built coarser
+	let chunkDirty = true; // the view moved since the chunks were last looked at
+	let pending = 0; // chunks still waiting to be built
 	let night = options.night ? 1 : 0; // 0 is day, 1 is night
 	let nightTarget = night;
 
@@ -101,7 +114,20 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 
 	const pa = new Vector3();
 	const pb = new Vector3();
-	function updateChunks(budget: number) {
+	function dropChunk(e: { chunk: Chunk }) {
+		scene.remove(e.chunk.main);
+		e.chunk.main.geometry.dispose();
+		if (e.chunk.lights) {
+			scene.remove(e.chunk.lights);
+			e.chunk.lights.geometry.dispose();
+		}
+	}
+
+	/** builds what the view needs for at most `budgetMs` (at least one chunk), the nearest to the middle first */
+	function updateChunks(budgetMs: number) {
+		if (!chunkDirty && pending === 0) return;
+		chunkDirty = false;
+		far = view.k > (far ? 1.6 : 2);
 		tick++;
 		let minX = Infinity;
 		let maxX = -Infinity;
@@ -124,34 +150,45 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		const cz1 = Math.min(Math.floor((maxZ + 14) / CH), ISLE_Z / CH - 1);
 		const midX = (minX + maxX) / 2;
 		const midZ = (minZ + maxZ) / 2;
+		focus.x = midX;
+		focus.z = midZ;
+		focus.r = Math.max(maxX - minX, maxZ - minZ) / 2;
+		focus.far = far;
 		const missing: [number, number, number][] = [];
 		for (let cz = cz0; cz <= cz1; cz++) {
 			for (let cx = cx0; cx <= cx1; cx++) {
 				const entry = chunks.get(`${cx},${cz}`);
 				if (entry) entry.seen = tick;
-				else missing.push([cx, cz, Math.hypot((cx + 0.5) * CH - midX, (cz + 0.5) * CH - midZ)]);
+				// a chunk of the other detail level stays on screen until its replacement is built
+				if (!entry || entry.far !== far) missing.push([cx, cz, Math.hypot((cx + 0.5) * CH - midX, (cz + 0.5) * CH - midZ)]);
 			}
 		}
 		missing.sort((a, b) => a[2] - b[2]);
-		for (const [cx, cz] of missing.slice(0, budget)) {
-			const chunk = buildChunk(cx, cz);
+		const started = performance.now();
+		let built = 0;
+		for (const [cx, cz] of missing) {
+			if (built > 0 && performance.now() - started > budgetMs) break;
+			const key = `${cx},${cz}`;
+			const old = chunks.get(key);
+			if (old) dropChunk(old);
+			const chunk = buildChunk(cx, cz, far);
+			chunk.main.userData.chunk = true;
 			scene.add(chunk.main);
 			if (chunk.lights) {
 				chunk.lights.visible = night > 0.5;
 				scene.add(chunk.lights);
 			}
-			chunks.set(`${cx},${cz}`, { chunk, seen: tick });
+			chunks.set(key, { chunk, seen: tick, far });
+			built++;
 		}
-		if (chunks.size > 260) {
+		pending = missing.length - built;
+		// forget what is far from the view; a zoomed-out view can need more than the usual few hundred
+		const limit = Math.max(260, (cx1 - cx0 + 1) * (cz1 - cz0 + 1) * 1.4);
+		if (chunks.size > limit) {
 			const old = [...chunks.entries()].filter(([, e]) => e.seen < tick).sort((a, b) => a[1].seen - b[1].seen);
 			for (const [key, e] of old) {
-				if (chunks.size <= 200) break;
-				scene.remove(e.chunk.main);
-				e.chunk.main.geometry.dispose();
-				if (e.chunk.lights) {
-					scene.remove(e.chunk.lights);
-					e.chunk.lights.geometry.dispose();
-				}
+				if (chunks.size <= limit * 0.8) break;
+				dropChunk(e);
 				chunks.delete(key);
 			}
 		}
@@ -186,7 +223,8 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	let viewH = 1;
 
 	function applyView() {
-		view.k = clamp(view.k, KMIN, kMax);
+	chunkDirty = true;
+	view.k = clamp(view.k, KMIN, kMax);
 		const half = baseHalf * view.k;
 		const hw = half * aspect;
 		// the centre may roam over most of the island, never off into the void
@@ -216,7 +254,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		const fit = extent(fitCorners);
 		isle = extent(isleCorners);
 		baseHalf = Math.max((fit.maxY - fit.minY) / 2, (fit.maxX - fit.minX) / 2 / aspect) * 1.04;
-		kMax = 4;
+		kMax = world.kMax ?? 4;
 		if (portrait !== wantPortrait) {
 			portrait = wantPortrait;
 			view.cx = (fit.minX + fit.maxX) / 2;
@@ -226,10 +264,11 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		applyView();
 	}
 
+	let boost = 0; // chunkier pixels, once the device has shown that it cannot keep up
 	function resize() {
-		const w = canvas.clientWidth || innerWidth;
-		const h = canvas.clientHeight || innerHeight;
-		const pixel = Math.min(6, Math.max(2, Math.round(Math.max(w, h) / 560)));
+	const w = canvas.clientWidth || innerWidth;
+	const h = canvas.clientHeight || innerHeight;
+	const pixel = Math.min(9, Math.max(2, Math.round(Math.max(w, h) / 560)) + boost);
 		renderer.setPixelRatio(1 / pixel);
 		renderer.setSize(w, h, false);
 		frame(w, h);
@@ -336,18 +375,20 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	};
 
 	const draw = () => {
-		updateChunks(reduced ? Infinity : 4);
-		traffic.pose();
-		cars.pose();
+		updateChunks(reduced ? Infinity : 5);
+		railway?.traffic.pose();
+		railway?.cars.pose();
+		if (reduced) extras?.simulate(0, focus); // nothing else moves them along
+		extras?.pose();
 		renderer.render(scene, camera);
 	};
 
-	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...traffic, crossings: crossings.crossings, cars, rails, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
+	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...railway?.traffic, crossings: railway?.crossings.crossings, cars: railway?.cars, rails: railway?.rails, extras, focus, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
 
 	// the trains start out mid-journey rather than at a standstill
 	for (let i = 0; i < 30 * 12; i++) {
-		traffic.simulate(1 / 30);
-		cars.simulate(1 / 30);
+		railway?.traffic.simulate(1 / 30);
+		railway?.cars.simulate(1 / 30);
 	}
 	updateChunks(Infinity);
 	draw();
@@ -367,20 +408,33 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 
 	let last = performance.now();
 	let lastDraw = 0;
+	let slow = 0; // consecutive slow frames
+	let boostedAt = 0;
 	const loop = (now: number) => {
 		requestAnimationFrame(loop);
 		const dt = Math.min(0.05, (now - last) / 1000);
 		last = now;
 		if (document.hidden || !canvas.clientWidth) return;
-		traffic.simulate(dt);
-		cars.simulate(dt);
+		railway?.traffic.simulate(dt);
+		railway?.cars.simulate(dt);
+		extras?.simulate(dt, focus);
 		coast(dt);
 		if (night !== nightTarget) {
 			night = clamp(night + Math.sign(nightTarget - night) * dt * 2.5, Math.min(night, nightTarget), Math.max(night, nightTarget));
 			applyLight();
 		}
-		if (now - lastDraw < 1000 / 70) return;
+		if (now - lastDraw < 1000 / 62) return;
+		// below 25 fps for a good while: draw fewer, bigger pixels
+		const gap = now - lastDraw;
 		lastDraw = now;
+		if (gap > 40 && gap < 250 && now - boostedAt > 2500) slow++;
+		else if (gap <= 40) slow = Math.max(0, slow - 2);
+		if (slow > 40 && boost < 3) {
+			boost++;
+			slow = 0;
+			boostedAt = now;
+			resize();
+		}
 		draw();
 	};
 	requestAnimationFrame(loop);

@@ -24,3 +24,6 @@ pnpm-debug.log*
 .idea/
 
 scripts/praha/.cache/
+
+scripts/praha/.cache-full/
+__pycache__/

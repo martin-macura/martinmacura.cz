@@ -99,26 +99,38 @@ export const glass = new MeshLambertMaterial({ color: 0x1c2232, emissive: 0x0000
 /** headlights and lamp heads */
 export const glow = new MeshLambertMaterial({ color: 0xffcf33, emissive: 0x000000 });
 const tmpColor = new Color();
+// the camera looks down from above, so the underside of a box is never seen: its 4 vertices and 2 triangles are left out
+const BOTTOM_FIRST_VERTEX = 12;
+const KEPT_VERTICES = Array.from({ length: 24 }, (_, v) => v).filter((v) => v < BOTTOM_FIRST_VERTEX || v >= BOTTOM_FIRST_VERTEX + 4);
+const KEPT_INDEX = (() => {
+	const remap = new Map(KEPT_VERTICES.map((v, i) => [v, i]));
+	return Array.from(unit.index!.array as ArrayLike<number>)
+		.filter((_, i) => i < 18 || i >= 24)
+		.map((v) => remap.get(v)!);
+})();
+const NV = KEPT_VERTICES.length; // 20
+const NI = KEPT_INDEX.length; // 30
+
 /** thousands of boxes become one mesh with a colour per vertex: one draw call for a whole chunk of city */
 export function meshFromBoxes(list: Box[], mat: MeshLambertMaterial | MeshBasicMaterial = vertexMaterial) {
 	const n = list.length;
-	const pos = new Float32Array(n * 72);
-	const nor = new Float32Array(n * 72);
-	const col = new Float32Array(n * 72);
-	const idx = new Uint32Array(n * 36);
+	const pos = new Float32Array(n * NV * 3);
+	const nor = new Float32Array(n * NV * 3);
+	const col = new Float32Array(n * NV * 3);
+	const idx = new Uint32Array(n * NI);
 	const up = unit.getAttribute("position").array;
 	const un = unit.getAttribute("normal").array;
-	const ui = unit.index!.array;
 	for (let i = 0; i < n; i++) {
 		const [w, h, d, color, px, py, pz, ry] = list[i];
 		const c = Math.cos(ry);
 		const s = Math.sin(ry);
 		tmpColor.setHex(color);
-		for (let v = 0; v < 24; v++) {
+		for (let k = 0; k < NV; k++) {
+			const v = KEPT_VERTICES[k];
 			const x = up[v * 3] * w;
 			const y = up[v * 3 + 1] * h;
 			const z = up[v * 3 + 2] * d;
-			const o = i * 72 + v * 3;
+			const o = i * NV * 3 + k * 3;
 			pos[o] = x * c + z * s + px;
 			pos[o + 1] = y + py;
 			pos[o + 2] = -x * s + z * c + pz;
@@ -131,7 +143,7 @@ export function meshFromBoxes(list: Box[], mat: MeshLambertMaterial | MeshBasicM
 			col[o + 1] = tmpColor.g;
 			col[o + 2] = tmpColor.b;
 		}
-		for (let k = 0; k < 36; k++) idx[i * 36 + k] = ui[k] + i * 24;
+		for (let k = 0; k < NI; k++) idx[i * NI + k] = KEPT_INDEX[k] + i * NV;
 	}
 	const geo = new BufferGeometry();
 	geo.setAttribute("position", new Float32BufferAttribute(pos, 3));
@@ -139,7 +151,9 @@ export function meshFromBoxes(list: Box[], mat: MeshLambertMaterial | MeshBasicM
 	geo.setAttribute("color", new Float32BufferAttribute(col, 3));
 	geo.setIndex(new Uint32BufferAttribute(idx, 1));
 	geo.computeBoundingSphere();
-	return new Mesh(geo, mat);
+	const mesh = new Mesh(geo, mat);
+	mesh.matrixAutoUpdate = false; // it never moves by itself
+	return mesh;
 }
 
 export type Pt = [number, number];

@@ -156,7 +156,7 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 	};
 	const onHill = (x: number, z: number) => hillAt(x, z) >= 0.8;
 
-	return function build(cx: number, cz: number): Chunk {
+	return function build(cx: number, cz: number, far: boolean): Chunk {
 		const x0 = cx * CH;
 		const z0 = cz * CH;
 		const list: Box[] = [];
@@ -164,7 +164,13 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 		const add = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry = 0) => list.push([w, h, d, color, x, y, z, ry]);
 		const r = rng(hash2(cx * 31 + 7, cz * 17 + 3));
 
-		for (let i = 0; i < 4; i++) add(1 + r() * 3, 0.02, 1 + r() * 3, COLORS.grassLight, x0 + r() * CH, 0.005 + i * 0.0001, z0 + r() * CH);
+		for (let i = 0; i < 4; i++) {
+			const w = 1 + r() * 3;
+			const d = 1 + r() * 3;
+			const x = x0 + r() * CH;
+			const z = z0 + r() * CH;
+			if (!far) add(w, 0.02, d, COLORS.grassLight, x, 0.005 + i * 0.0001, z);
+		}
 
 		// --- a town square with a church, now and then
 		let hub: { x: number; z: number } | null = null;
@@ -179,8 +185,10 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 			}
 			if (ok) {
 				hub = { x: hx, z: hz };
+				// the square, in rows
 				for (let iz = -6; iz <= 6; iz++) {
-					for (let ix = -6; ix <= 6; ix++) if (Math.hypot(ix, iz) <= 5.6) add(1, 0.06, 1, COLORS.paving, Math.round(hx) + ix + 0.5, 0.03, Math.round(hz) + iz + 0.5);
+					const half = Math.floor(Math.sqrt(Math.max(0, 5.6 * 5.6 - iz * iz)));
+					add(half * 2 + 1, 0.06, 1, COLORS.paving, Math.round(hx) + 0.5, 0.03, Math.round(hz) + iz + 0.5);
 				}
 				// church: nave, red roof, tower with a spire
 				const nx = hx;
@@ -190,36 +198,57 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 				add(2.4, 0.4, 5.9, ROOFS[0], nx, 3.8, nz);
 				add(1.0, 0.4, 5.9, ROOFS[0], nx, 4.2, nz);
 				add(1.7, 7.2, 1.7, 0xe8dcc0, nx, 3.6, nz + 3.6);
-				for (let t = 0; t < 4; t++) add(1.9 - t * 0.45, 0.6, 1.9 - t * 0.45, 0x4a5560, nx, 7.5 + t * 0.6, nz + 3.6);
-				add(0.12, 0.8, 0.12, COLORS.yellow, nx, 10.3, nz + 3.6);
-				lamps.push([0.3, 0.45, 0.1, COLORS.lit, nx, 6.2, nz + 4.47, 0]);
+				if (far) {
+					add(1.5, 2.4, 1.5, 0x4a5560, nx, 8.7, nz + 3.6);
+				} else {
+					for (let t = 0; t < 4; t++) add(1.9 - t * 0.45, 0.6, 1.9 - t * 0.45, 0x4a5560, nx, 7.5 + t * 0.6, nz + 3.6);
+					add(0.12, 0.8, 0.12, COLORS.yellow, nx, 10.3, nz + 3.6);
+					lamps.push([0.3, 0.45, 0.1, COLORS.lit, nx, 6.2, nz + 4.47, 0]);
+				}
 				// fountain
 				add(1.8, 0.35, 1.8, COLORS.rock, hx, 0.2, hz + 1.4);
 				add(1.3, 0.1, 1.3, COLORS.water, hx, 0.4, hz + 1.4);
-				add(0.3, 0.9, 0.3, COLORS.rock, hx, 0.65, hz + 1.4);
+				if (!far) add(0.3, 0.9, 0.3, COLORS.rock, hx, 0.65, hz + 1.4);
 			}
 		}
 		const inHub = (x: number, z: number) => hub !== null && Math.hypot(x - hub.x, z - hub.z) < 6.6;
 
-		// --- ground, one unit at a time: water, streets, bridges, street lamps
+		// --- ground, row by row, in runs of equal cells: water, streets, bridges, street lamps
 		for (let iz = 0; iz < CH; iz++) {
-			for (let ix = 0; ix < CH; ix++) {
+			let runKind = 0; // 1 water, 2 lighter water, 3 bridge, 4 street
+			let runStart = 0;
+			const flush = (end: number) => {
+				if (!runKind) return;
+				const len = end - runStart;
+				const x = x0 + runStart + len / 2;
+				const z = z0 + iz + 0.5;
+				if (runKind === 1) add(len, 0.05, 1, COLORS.water, x, 0.015, z);
+				else if (runKind === 2) add(len, 0.05, 1, COLORS.water2, x, 0.015, z);
+				else if (runKind === 3) add(len, 0.1, 1, COLORS.stone, x, 0.05, z);
+				else add(len, 0.05, 1, COLORS.road, x, 0.035, z);
+			};
+			for (let ix = 0; ix <= CH; ix++) {
+				let kind = 0;
 				const x = x0 + ix + 0.5;
 				const z = z0 + iz + 0.5;
-				if (Math.abs(x) > ISLE_X || Math.abs(z) > ISLE_Z) continue;
-				const wet = isWater(x, z);
-				// a road may cross a stream on a bridge, but not go out over the middle of a lake
-				const open = wet && isWater(x - 4, z) && isWater(x + 4, z) && isWater(x, z - 4) && isWater(x, z + 4) && isWater(x - 3, z - 3) && isWater(x + 3, z + 3);
-				const road = roadAt(x, z) && !onHill(x, z) && !inHub(x, z) && !open && roadOK(x, z);
-				if (wet) {
-					if (road) add(1, 0.1, 1, COLORS.stone, x, 0.05, z);
-					else add(1, 0.05, 1, (ix + iz) % 3 === 0 ? COLORS.water2 : COLORS.water, x, 0.015, z);
-				} else if (road) {
-					add(1, 0.05, 1, COLORS.road, x, 0.035, z);
-					if (hash2(Math.floor(x), Math.floor(z)) % 41 === 0 && railDist(x, z) > 2.5) {
-						add(0.1, 1.3, 0.1, COLORS.dark, x + 0.4, 0.65, z + 0.4);
-						lamps.push([0.26, 0.26, 0.26, COLORS.lit, x + 0.4, 1.4, z + 0.4, 0]);
+				if (ix < CH && Math.abs(x) <= ISLE_X && Math.abs(z) <= ISLE_Z) {
+					const wet = isWater(x, z);
+					// a road may cross a stream on a bridge, but not go out over the middle of a lake
+					const open = wet && isWater(x - 4, z) && isWater(x + 4, z) && isWater(x, z - 4) && isWater(x, z + 4) && isWater(x - 3, z - 3) && isWater(x + 3, z + 3);
+					const road = roadAt(x, z) && !onHill(x, z) && !inHub(x, z) && !open && roadOK(x, z);
+					if (wet) kind = road ? 3 : !far && (ix + iz) % 3 === 0 ? 2 : 1;
+					else if (road) {
+						kind = 4;
+						if (!far && hash2(Math.floor(x), Math.floor(z)) % 41 === 0 && railDist(x, z) > 2.5) {
+							add(0.1, 1.3, 0.1, COLORS.dark, x + 0.4, 0.65, z + 0.4);
+							lamps.push([0.26, 0.26, 0.26, COLORS.lit, x + 0.4, 1.4, z + 0.4, 0]);
+						}
 					}
+				}
+				if (kind !== runKind) {
+					flush(ix);
+					runKind = kind;
+					runStart = ix;
 				}
 			}
 		}
@@ -242,7 +271,7 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 				const k = hash2(Math.floor(x), Math.floor(z));
 				const color = h < 1.7 ? HILL_TOPS[k % 3] : h < 3.3 ? 0x4a8a4c : h < 5 ? 0x5a9a58 : h < 7.4 ? COLORS.rock : h < 8.6 ? 0x8a8a8a : 0xe2e2e2;
 				add(2, h, 2, color, x, h / 2, z);
-				if (h < 5 && k % 100 < 34) conifer(x, z, h);
+				if (!far && h < 5 && k % 100 < 34) conifer(x, z, h);
 			}
 		}
 
@@ -259,9 +288,15 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 			return true;
 		};
 		const tree = (x: number, z: number, cr: () => number) => {
+			const leaves = LEAVES[Math.floor(cr() * 3)];
+			const top = cr() < 0.5;
+			if (far) {
+				add(0.75, 0.9, 0.75, leaves, x, 0.6, z);
+				return;
+			}
 			add(0.16, 0.45, 0.16, COLORS.wood, x, 0.22, z);
-			add(0.75, 0.75, 0.75, LEAVES[Math.floor(cr() * 3)], x, 0.8, z);
-			if (cr() < 0.5) add(0.5, 0.5, 0.5, LEAVES[Math.floor(cr() * 3)], x, 1.35, z);
+			add(0.75, 0.75, 0.75, leaves, x, 0.8, z);
+			if (top) add(0.5, 0.5, 0.5, LEAVES[Math.floor(cr() * 3)], x, 1.35, z);
 		};
 		for (let ix = Math.ceil(x0 / CELL); ix * CELL < x0 + CH; ix++) {
 			for (let iz = Math.ceil(z0 / CELL); iz * CELL < z0 + CH; iz++) {
@@ -291,6 +326,10 @@ export function createChunkBuilder(railDist: (x: number, z: number) => number, r
 				const wall = WALLS[Math.floor(cr() * WALLS.length)];
 				const roof = ROOFS[Math.floor(cr() * ROOFS.length)];
 				add(w, h, d, wall, x, h / 2, z, ang);
+				if (far) {
+					add(w + 0.12, 0.6, d + 0.12, h > 3.4 ? COLORS.dark : roof, x, h + 0.3, z, ang);
+					continue;
+				}
 				const c = Math.cos(ang);
 				const s = Math.sin(ang);
 				if (h > 3.4) {

@@ -2,7 +2,9 @@
 import glob, json, math, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE = os.path.join(HERE, ".cache")
+# PRAHA_FULL=1 bakes the whole city up to its borders instead of the middle of it (a separate cache, a bigger grid)
+FULL = os.environ.get("PRAHA_FULL") == "1"
+CACHE = os.path.join(HERE, ".cache-full" if FULL else ".cache")
 
 # world: x east, z south, 1 unit = M metres; (0, 0) is at the Charles Bridge unless the anchor is moved
 LAT0, LON0 = 50.0865, 14.4112
@@ -10,6 +12,21 @@ M = 6.0
 ISLE_X, ISLE_Z = 640, 480
 KX = 111320 * math.cos(math.radians(50.08)) / M
 KZ = 111200 / M
+
+# what is fetched: south, north, west, east. The middle is a little wider than the world, so that the anchor can still move.
+# The whole city is the bounding box of the administrative border of Prague (49.942-50.177 N, 14.224-14.706 E) and a margin.
+S, N, W, E = (49.935, 50.185, 14.215, 14.715) if FULL else (50.0580, 50.1150, 14.3500, 14.4750)
+
+def _grid():
+    """the grid of the baked map in world units: x0, z0 of the first cell, then its width and height (even)"""
+    if not FULL:
+        return -ISLE_X, -ISLE_Z, ISLE_X * 2, ISLE_Z * 2
+    xa, za = (W - LON0) * KX, -(N - LAT0) * KZ
+    xb, zb = (E - LON0) * KX, -(S - LAT0) * KZ
+    x0, z0 = math.floor(xa / 2) * 2, math.floor(za / 2) * 2
+    return x0, z0, math.ceil((xb - x0) / 2) * 2, math.ceil((zb - z0) / 2) * 2
+
+GX0, GZ0, GW, GH = _grid()
 
 
 def project(lat, lon):
@@ -23,6 +40,11 @@ def unproject(x, z):
 def load(name):
     with open(os.path.join(CACHE, name + ".json")) as f:
         return json.load(f)["elements"]
+
+
+def layer(name):
+    """a fetched layer: one file for the middle of the city, tiles for the whole of it"""
+    return load_many(name + "-*") if FULL else load(name)
 
 
 def load_many(pattern):

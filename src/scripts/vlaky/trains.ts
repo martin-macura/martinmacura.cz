@@ -1,7 +1,7 @@
 // Trains of all sorts, the stations, and the people on the platforms.
 import { Group, Mesh, MeshBasicMaterial, type Scene, Sprite, SpriteMaterial, CanvasTexture, NearestFilter, Vector3 } from "three";
 import { type Edge, edgeAt, LINES, type Rails, type StationSite } from "./rails";
-import { box, COLORS, glass, glow, unit } from "./util";
+import { type Box, box, COLORS, glass, glow, meshFromBoxes, unit } from "./util";
 
 export type CarKind = "loco" | "diesel" | "steam" | "tender" | "coach" | "dcoach" | "railcar" | "tank" | "box" | "flat" | "hopper";
 const LENGTH: Record<CarKind, number> = { loco: 2.1, diesel: 2.2, steam: 2.4, tender: 1.4, coach: 1.9, dcoach: 1.9, railcar: 2.6, tank: 1.6, box: 1.6, flat: 1.7, hopper: 1.6 };
@@ -36,7 +36,7 @@ export interface Train {
 }
 
 interface Person {
-	mesh: Group;
+	mesh: Mesh;
 	state: "away" | "enter" | "wait" | "board" | "alight";
 	u: number; // along the platform from the middle of the stopped train
 	v: number; // across it, from the rail
@@ -60,16 +60,17 @@ const WALK = 1.3;
 const SKINS = [0xf1c27d, 0xe0ac69, 0x8d5524, 0xffdbac];
 const COATS = [0xff5c4d, 0x3d7bff, 0xffcf33, 0x2fd487, 0xff7ab8, 0xf2f2f2, 0x7a6a9a];
 
-const glassBox = (g: Group, w: number, h: number, d: number, x: number, y: number, z: number, m = glass) => {
-	const mesh = new Mesh(unit, m);
-	mesh.scale.set(w, h, d);
-	mesh.position.set(x, y, z);
-	g.add(mesh);
-};
+
 
 function buildCar(kind: CarKind, index: number, body: number, stripe: number) {
 	const len = LENGTH[kind];
 	const g = new Group();
+	// a car is a handful of boxes: one mesh each for the body, the windows and the lights, not one per box
+	const solid: Box[] = [];
+	const windows: Box[] = [];
+	const lights: Box[] = [];
+	const box = (_: Group, w: number, h: number, d: number, color: number, x: number, y: number, z: number) => void solid.push([w, h, d, color, x, y, z, 0]);
+	const glassBox = (_: Group, w: number, h: number, d: number, x: number, y: number, z: number, m = glass) => void (m === glow ? lights : windows).push([w, h, d, 0xffffff, x, y, z, 0]);
 	const chassis = () => {
 		box(g, 0.9, 0.12, len - 0.3, COLORS.dark, 0, 0.12, 0);
 		for (const z of [-len * 0.3, len * 0.3]) box(g, 0.98, 0.16, 0.5, COLORS.dark, 0, 0.1, z);
@@ -155,11 +156,14 @@ function buildCar(kind: CarKind, index: number, body: number, stripe: number) {
 			box(g, 1.0, 0.6, len - 0.1, 0x3a3a3a, 0, 0.66, 0);
 			box(g, 0.8, 0.25, len - 0.4, 0x121212, 0, 1.08, 0);
 			break;
+		}
+		g.add(meshFromBoxes(solid));
+		if (windows.length) g.add(meshFromBoxes(windows, glass));
+		if (lights.length) g.add(meshFromBoxes(lights, glow));
+		return g;
 	}
-	return g;
-}
 
-/** distance the front still has to go to reach the point `sd` on edge `sri` of the route */
+	/** distance the front still has to go to reach the point `sd` on edge `sri` of the route */
 export function distanceAlong(tr: Train, sri: number, sd: number) {
 	if (sri === tr.ri && sd >= tr.d) return sd - tr.d;
 	const n = tr.route.length;
@@ -245,10 +249,12 @@ export function createTraffic(
 		label.position.set(post.x + t.x, 2.7, post.z + t.z);
 		scene.add(label);
 		for (let i = 0; i < 9; i++) {
-			const mesh = new Group();
-			box(mesh, 0.2, 0.14, 0.14, COLORS.dark, 0, 0.07, 0);
-			box(mesh, 0.28, 0.34, 0.2, COATS[Math.floor(rand() * COATS.length)], 0, 0.31, 0);
-			box(mesh, 0.22, 0.22, 0.22, SKINS[Math.floor(rand() * SKINS.length)], 0, 0.59, 0);
+			const mesh = meshFromBoxes([
+				[0.2, 0.14, 0.14, COLORS.dark, 0, 0.07, 0, 0],
+				[0.28, 0.34, 0.2, COATS[Math.floor(rand() * COATS.length)], 0, 0.31, 0, 0],
+				[0.22, 0.22, 0.22, SKINS[Math.floor(rand() * SKINS.length)], 0, 0.59, 0, 0],
+			]);
+			mesh.matrixAutoUpdate = true; // unlike the scenery, a person walks
 			scene.add(mesh);
 			station.people.push({ mesh, state: "away", u: 0, v: 0, slot: -1, door: 0, exitU: 0, timer: rand() * 10, boardAt: -1, phase: rand() * 10, walking: false });
 		}
@@ -281,6 +287,7 @@ export function createTraffic(
 		const doors = spec.cars.flatMap((kind, i) => (PASSENGER.has(kind) ? [len / 2 - back[i]] : []));
 		const smoke = Array.from({ length: 6 }, () => {
 			const mesh = new Mesh(unit, smokeMat);
+			mesh.userData.dynamic = true; // not merged into the scenery
 			mesh.visible = false;
 			scene.add(mesh);
 			return { mesh, age: 9 };
