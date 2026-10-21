@@ -1,10 +1,24 @@
 // What differs between the towns: the land, the water, the streets and the houses, and where the tracks go.
-import type { Mesh } from "three";
+import type { Mesh, Scene } from "three";
 import type { Layout } from "./rails";
 
 export interface Chunk {
 	main: Mesh;
 	lights: Mesh | null;
+}
+
+/** what the view shows: its middle, half its size, and whether it is zoomed out so far that the town is coarse */
+export interface Focus {
+	x: number;
+	z: number;
+	r: number;
+	far: boolean;
+}
+
+/** things a town adds that move: they are told what the view shows */
+export interface Extras {
+	simulate(dt: number, focus: Focus): void;
+	pose(): void;
 }
 
 export interface World {
@@ -25,4 +39,6 @@ export interface World {
 	initWater(carves: [number, number, number][]): void;
 	/** `far` builds the coarse version for zoomed-out views: no windows, lamps or small details */
 	createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): (cx: number, cz: number, far: boolean) => Chunk;
+	/** the traffic of the town, when it has any of its own */
+	createExtras?(scene: Scene, railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): Extras;
 }

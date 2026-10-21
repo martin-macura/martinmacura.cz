@@ -18,7 +18,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { buildRailScenery, carvePoints, createRails, stationSites, useLayout } from "./rails";
 import { createCrossings } from "./crossings";
 import { CH, fictionWorld } from "./terrain";
-import type { Chunk, World } from "./world";
+import type { Chunk, Focus, World } from "./world";
 import { createTraffic } from "./trains";
 import { box, clamp, COLORS, glass, glow, rng, unit } from "./util";
 
@@ -62,6 +62,8 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 
 	const traffic = createTraffic(scene, rails, scenery, sites, rand);
 	const cars = crossings.attach(traffic.trains);
+	const extras = world.createExtras?.(scene, rails.railDist, crossings.roadOK);
+	const focus: Focus = { x: world.fit.x, z: world.fit.z, r: world.fit.hx, far: false };
 
 	// thousands of boxes would be thousands of draw calls: merge the track, the platforms and the rest of the scenery into one mesh per material
 	const batches = new Map<MeshLambertMaterial, BufferGeometry[]>();
@@ -140,6 +142,10 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		const cz1 = Math.min(Math.floor((maxZ + 14) / CH), ISLE_Z / CH - 1);
 		const midX = (minX + maxX) / 2;
 		const midZ = (minZ + maxZ) / 2;
+		focus.x = midX;
+		focus.z = midZ;
+		focus.r = Math.max(maxX - minX, maxZ - minZ) / 2;
+		focus.far = far;
 		const missing: [number, number, number][] = [];
 		for (let cz = cz0; cz <= cz1; cz++) {
 			for (let cx = cx0; cx <= cx1; cx++) {
@@ -364,10 +370,11 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		updateChunks(reduced ? Infinity : 5);
 		traffic.pose();
 		cars.pose();
+		extras?.pose();
 		renderer.render(scene, camera);
 	};
 
-	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...traffic, crossings: crossings.crossings, cars, rails, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
+	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...traffic, crossings: crossings.crossings, cars, extras, focus, rails, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
 
 	// the trains start out mid-journey rather than at a standstill
 	for (let i = 0; i < 30 * 12; i++) {
@@ -401,6 +408,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		if (document.hidden || !canvas.clientWidth) return;
 		traffic.simulate(dt);
 		cars.simulate(dt);
+		extras?.simulate(dt, focus);
 		coast(dt);
 		if (night !== nightTarget) {
 			night = clamp(night + Math.sign(nightTarget - night) * dt * 2.5, Math.min(night, nightTarget), Math.max(night, nightTarget));

@@ -1,11 +1,13 @@
 // Prague: the land is the real one. The river, the streets, the parks, the hills and some 26,000 houses come from
 // OpenStreetMap and elevation tiles, baked by scripts/praha/bake.py into public/vlaky/praha.dat; the railway is our own.
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: terrain tiles built from public elevation data.
+import type { Scene } from "three";
 import type { Layout } from "./rails";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
+import { createTraffic } from "./praha-traffic";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
-import type { Chunk, World } from "./world";
+import type { Chunk, Extras, World } from "./world";
 
 const CH = 32;
 const STEP = 0.8; // a step of the terrain is 8 m and 0.8 units high
@@ -130,16 +132,18 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 		}
 	}
 
+	/** the terrain in columns of 2 x 2, flattened where the railway runs */
+	const columns = (railDist: (x: number, z: number) => number) => (x: number, z: number) => {
+		const mx = Math.floor(x / 2) * 2 + 1;
+		const mz = Math.floor(z / 2) * 2 + 1;
+		const s = stepAt(mx, mz);
+		if (s === 0) return 0;
+		const f = clamp((railDist(mx, mz) - 6) / 7, 0, 1);
+		return Math.floor(s * f + 1e-6) * STEP;
+	};
+
 	function createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
-		/** the terrain in columns of 2 x 2, flattened where the railway runs */
-		const columnH = (x: number, z: number) => {
-			const mx = Math.floor(x / 2) * 2 + 1;
-			const mz = Math.floor(z / 2) * 2 + 1;
-			const s = stepAt(mx, mz);
-			if (s === 0) return 0;
-			const f = clamp((railDist(mx, mz) - 6) / 7, 0, 1);
-			return Math.floor(s * f + 1e-6) * STEP;
-		};
+		const columnH = columns(railDist);
 
 		return function build(cx: number, cz: number, far: boolean): Chunk {
 			const x0 = cx * CH;
@@ -411,6 +415,15 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 		tower(CHARLES_LEN * 0.27 - 4.4, 2.2, 3.8, 0x6b3f2e);
 	}
 
+	/** cars on the streets, when the streets came as lines */
+	function createExtras(scene: Scene, railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): Extras {
+		if (!roads) return { simulate() {}, pose() {} };
+		const columnH = columns(railDist);
+		// on the road, or on the deck of a bridge over the water
+		const groundAt = (x: number, z: number) => (isWater(x, z) ? 0.4 : columnH(x, z) + 0.07);
+		return createTraffic(scene, roads, groundAt, (x, z) => isWater(x, z) || roadOK(x, z));
+	}
+
 	return {
 		isleX,
 		isleZ,
@@ -423,6 +436,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null): World {
 		roadAt,
 		initWater,
 		createChunkBuilder,
+		createExtras,
 	};
 }
 
