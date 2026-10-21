@@ -13,7 +13,9 @@ import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./
 import type { Chunk, Extras, World } from "./world";
 
 const CH = 32;
-const STEP = 0.8; // a step of the terrain is 8 m and 0.8 units high
+/** a flat roof: tar, concrete, gravel */
+const FLAT_ROOFS = [0x6e737a, 0x7d8189, 0x8b8f95];
+const STEP = 1.5 / 6; // the terrain comes in metres; a unit is 6 m across, the hills raised half again to be seen
 
 const WALLS = [0xe8dcc0, 0xd9b36a, 0xe0a38a, 0xa9c4d9, 0xb7cfa0, 0xf0ebe0, 0xd8c7a3, 0xc9a98c, 0xe8dcc0, 0xf0ebe0];
 const ROOFS = [0xb5482f, 0xa03e2a, 0xc4623a, 0xb5482f, 0xa03e2a, 0xc4623a, 0xb5482f, 0x8a3a2a, 0x5b3a2e, 0x4a5560];
@@ -54,7 +56,9 @@ export async function loadPraha(url: string): Promise<World> {
 function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | null, trains: TramData | null, buses: TramData | null, metro: TramData | null): World {
 	const dv = new DataView(buf);
 	// a map of the whole city says where its grid lies (and starts with 0); the older one is centred on (0, 0)
-	const placed = dv.getUint16(0, true) === 0;
+	// version 1: the terrain comes as the difference from the row above (it packs smaller)
+	const version = dv.getUint16(0, true);
+	const placed = version <= 1;
 	const o = placed ? 2 : 0;
 	const gw = dv.getUint16(o, true);
 	const gh = dv.getUint16(o + 2, true);
@@ -66,6 +70,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	const isleZ = placed ? Math.ceil(Math.max(-z0, z0 + gh) / CH) * CH : 416;
 	const cells = new Uint8Array(buf, head, gw * gh); // the buffer is ours to change
 	const steps = new Uint8Array(buf, head + gw * gh, (gw / 2) * (gh / 2));
+	if (version === 1) for (let i = gw / 2; i < steps.length; i++) steps[i] = (steps[i] + steps[i - gw / 2]) & 255;
 	const at = head + gw * gh + (gw / 2) * (gh / 2);
 	const count = dv.getUint32(at, true);
 	const houses = new Int16Array(count * 7);
@@ -89,6 +94,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	};
 	const isWater = (x: number, z: number) => (cellAt(x, z) & 1) === 1;
 	const roadAt = (x: number, z: number) => ((cellAt(x, z) >> 1) & 3) > 0;
+	// a railway tunnel runs under here: the hill stays over it and the train is out of sight
+	const tunnelAt = (x: number, z: number) => (cellAt(x, z) & 64) === 64;
 	const stepAt = (x: number, z: number) => {
 		const ix = (Math.floor(x) - x0) >> 1;
 		const iz = (Math.floor(z) - z0) >> 1;
@@ -96,7 +103,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	};
 	const hillHeight = (x: number, z: number) => stepAt(x, z) * STEP;
 	// the railway runs at a height of its own, smooth where the terrain goes in steps
-	const bed = trains ? railProfile(trains, hillHeight, (x, z) => isWater(x, z)) : undefined;
+	const bed = trains ? railProfile(trains, hillHeight, (x, z) => isWater(x, z), tunnelAt) : undefined;
 	// the metro, where it comes out of the ground: a railway of its own
 	const metroBed = metro ? railProfile(metro, hillHeight, (x, z) => isWater(x, z)) : undefined;
 	const metroSeen = metro ? nearTrack(metro) : () => false;
@@ -125,7 +132,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		// the land a little above the bed of the railway (an embankment the terrain model has kept, a cutting) is dug
 		// down to it; a real hill is left for the tunnel through it
 		const b = bed ? bed(mx, mz) : NaN;
-		if (b > 0 && h > b && h < b + 3 * STEP) return Math.floor(b / STEP + 1e-6) * STEP;
+		if (b > 0 && h > b && h < b + 4 && !tunnelAt(mx, mz)) return Math.floor(b / STEP + 1e-6) * STEP;
 		return h;
 	};
 
@@ -212,7 +219,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			// the tram rails and stops, up close
 			if (trams) lineBoxes(trams, TRAM, cx, cz, far, columnH, isWater, (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too
-			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, columnH, isWater, () => false, add, bed);
+			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, columnH, isWater, tunnelAt, add, bed);
 			if (metro) lineBoxes(metro, METRO, cx, cz, far, columnH, isWater, (x, z) => !metroSeen(x, z), add, metroBed);
 
 			// the piers of the bridges
@@ -251,12 +258,12 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 					const z = z0 + iz + 1;
 					if (Math.abs(x) > isleX - 1 || Math.abs(z) > isleZ - 1) continue;
 					const h = columnH(x, z);
-					if (h < STEP) continue;
+					if (h <= 0) continue;
 					const g = (cellAt(x - 0.5, z - 0.5) >> 4) & 3;
 					const k = hash2(Math.floor(x), Math.floor(z));
-					const color = g === 2 ? (k % 3 ? 0x2f6b3c : 0x3a7a44) : g === 1 ? (k % 3 ? 0x5a9a58 : 0x6fae5e) : h > 6 ? 0x9a8d74 : EARTH[k % 2];
+					const color = g === 2 ? (k % 3 ? 0x2f6b3c : 0x3a7a44) : g === 1 ? (k % 3 ? 0x5a9a58 : 0x6fae5e) : h > 60 * STEP ? 0x9a8d74 : EARTH[k % 2]; // bare rock above some 60 m
 					// contour bands, so that the eye can read the slope
-					const band = [1, 0.94, 0.88][Math.round(h / STEP) % 3];
+					const band = [1, 0.94, 0.88][Math.floor(h / (8 * STEP)) % 3]; // every 8 m
 					add(2, h, 2, shade(color, band), x, h / 2, z);
 				}
 			}
@@ -367,7 +374,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 					gmin = Math.min(gmin, g);
 				}
 				// a house on too steep a slope is left out; a big one may stand on a plinth that much higher
-				if (!ok || gmax - gmin > Math.max(2.5, Math.max(w, d) * 0.3)) continue;
+				if (!ok || gmax - gmin > Math.max(6, Math.max(w, d) * 0.75)) continue;
 				const k = hash2(Math.round(x * 4), Math.round(z * 4));
 				const wall = WALLS[k % WALLS.length];
 				const roof = ROOFS[(k >>> 5) % ROOFS.length];
@@ -384,7 +391,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				add(w, h, d, wall, x, gmax + h / 2, z, ry);
 				const flat = kind & 2 || h > 7.5;
 				if (flat) {
-					add(w + 0.1, 0.14, d + 0.1, COLORS.dark, x, gmax + h + 0.07, z, ry);
+					add(w + 0.1, 0.14, d + 0.1, FLAT_ROOFS[(k >>> 9) % FLAT_ROOFS.length], x, gmax + h + 0.07, z, ry);
 				} else {
 					const rise = d > 3 ? 0.4 : 0.3;
 					add(w + 0.12, rise, d + 0.12, roof, x, gmax + h + rise / 2, z, ry);
@@ -482,10 +489,16 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		}
 		if (trains) {
 			all.push(
-				createTrams(scene, trains, TRAIN, (x, z) => {
-					const h = bed ? bed(x, z) : NaN;
-					return Number.isNaN(h) ? (isWater(x, z) ? 0.4 : columnH(x, z)) : h;
-				}),
+				createTrams(
+					scene,
+					trains,
+					TRAIN,
+					(x, z) => {
+						const h = bed ? bed(x, z) : NaN;
+						return Number.isNaN(h) ? (isWater(x, z) ? 0.4 : columnH(x, z)) : h;
+					},
+					(x, z) => !tunnelAt(x, z),
+				),
 			);
 		}
 		return {
