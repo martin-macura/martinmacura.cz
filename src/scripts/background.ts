@@ -491,12 +491,66 @@ const BUILDERS: Record<Key, (c: number) => { group: Group; height: number }> = {
 // ---------------------------------------------------------------------------------------------
 // the product: a tiny copy of this page in a chunky browser window
 
-// Slides are placeholders until the real screenshots and the logo exist: swap `draw` for ctx.drawImage of a
-// 64x40 pixelated version. Texts stay ASCII and at most 7 letters (the font is 8px wide).
-const SLIDES: { title: string; sub: string; color: string }[] = [
-	{ title: "DISPO", sub: "dispecink", color: "#3d7bff" },
-	{ title: "AUTO", sub: "autoskola", color: "#2fd487" },
-	{ title: "SOFTERO", sub: "logo", color: "#ff5c4d" },
+// The projects, as 8-bit mockups on the 64x40 screen (not the real sites). Each draws below the 5px title bar.
+// The Softero slide is a stand-in wordmark until the real logo is dropped in.
+type Draw = (ctx: CanvasRenderingContext2D) => void;
+const rect = (ctx: CanvasRenderingContext2D, color: string, x: number, y: number, w: number, h: number) => {
+	ctx.fillStyle = color;
+	ctx.fillRect(x, y, w, h);
+};
+
+const SLIDES: Draw[] = [
+	// dispatch: a map with two routes and vehicles, a list of jobs on the side
+	(ctx) => {
+		rect(ctx, "#16202c", 3, 8, 40, 29); // map
+		rect(ctx, "#2a3a4c", 3, 20, 40, 1); // streets
+		rect(ctx, "#2a3a4c", 16, 8, 1, 29);
+		rect(ctx, "#2a3a4c", 30, 8, 1, 29);
+		rect(ctx, "#3d7bff", 6, 30, 11, 1); // route 1
+		rect(ctx, "#3d7bff", 16, 20, 1, 11);
+		rect(ctx, "#ffcf33", 16, 14, 15, 1); // route 2
+		rect(ctx, "#ffcf33", 30, 14, 1, 7);
+		rect(ctx, "#3d7bff", 5, 29, 3, 3); // vehicles
+		rect(ctx, "#ffcf33", 29, 19, 3, 3);
+		rect(ctx, "#ff5c4d", 36, 25, 3, 3); // incident
+		for (let i = 0; i < 4; i++) {
+			rect(ctx, "#1c1c1c", 46, 8 + i * 8, 15, 6); // job list
+			rect(ctx, ["#3d7bff", "#ffcf33", "#ff5c4d", "#2fd487"][i], 47, 9 + i * 8, 2, 4);
+			rect(ctx, "#8a8a8a", 51, 10 + i * 8, 8, 1);
+			rect(ctx, "#4a4a4a", 51, 12 + i * 8, 5, 1);
+		}
+	},
+	// driving school: a road with a car, a theory question with four answers
+	(ctx) => {
+		rect(ctx, "#4a6a9a", 3, 8, 58, 11); // sky
+		rect(ctx, "#2fd487", 3, 19, 58, 4); // grass
+		rect(ctx, "#2c2c2c", 3, 23, 58, 8); // road
+		for (let x = 5; x < 60; x += 8) rect(ctx, "#f2f2f2", x, 27, 4, 1);
+		rect(ctx, "#ff5c4d", 12, 24, 12, 4); // car
+		rect(ctx, "#ff5c4d", 15, 22, 6, 2);
+		rect(ctx, "#f2f2f2", 16, 22, 4, 1);
+		rect(ctx, "#0c0c0c", 13, 28, 3, 2);
+		rect(ctx, "#0c0c0c", 20, 28, 3, 2);
+		rect(ctx, "#f2f2f2", 46, 11, 7, 7); // road sign
+		rect(ctx, "#ff5c4d", 47, 12, 5, 5);
+		rect(ctx, "#f2f2f2", 48, 14, 3, 1);
+		rect(ctx, "#8a8a8a", 49, 18, 1, 5);
+		for (let i = 0; i < 4; i++) {
+			rect(ctx, i === 1 ? "#2fd487" : "#1c1c1c", 3 + i * 15, 33, 13, 4); // answers
+			rect(ctx, "#f2f2f2", 5 + i * 15, 35, 7, 1);
+		}
+	},
+	// Softero: wordmark stand-in
+	(ctx) => {
+		rect(ctx, "#f2f2f2", 6, 12, 8, 8); // mark
+		rect(ctx, "#0c0c0c", 8, 14, 4, 4);
+		rect(ctx, "#ff5c4d", 10, 16, 4, 4);
+		ctx.fillStyle = "#f2f2f2";
+		ctx.font = '8px "Press Start 2P", monospace';
+		ctx.textBaseline = "top";
+		ctx.fillText("SOFTERO", 4, 24);
+		rect(ctx, "#ff5c4d", 4, 34, 56, 1);
+	},
 ];
 
 function buildProduct() {
@@ -529,25 +583,10 @@ function buildProduct() {
 		ctx.fillRect(47, 33, 9, 1);
 	};
 	const drawSlide = (ctx: CanvasRenderingContext2D, i: number) => {
-		const slide = SLIDES[i];
-		ctx.fillStyle = "#0c0c0c";
-		ctx.fillRect(0, 0, 64, 40);
-		ctx.fillStyle = "#1c1c1c";
-		ctx.fillRect(0, 0, 64, 5);
-		ctx.fillStyle = "#4a4a4a";
-		for (let n = 0; n < 3; n++) ctx.fillRect(2 + n * 3, 2, 1, 1);
-		ctx.fillStyle = slide.color;
-		ctx.fillRect(4, 9, 56, 24);
-		ctx.fillStyle = "#0c0c0c";
-		ctx.fillRect(6, 11, 52, 20);
-		ctx.fillStyle = "#f2f2f2";
-		ctx.font = '8px "Press Start 2P", monospace';
-		ctx.textBaseline = "top";
-		ctx.fillText(slide.title, Math.floor((64 - slide.title.length * 8) / 2), 16);
-		ctx.fillStyle = slide.color;
-		ctx.fillRect(10, 27, 8 + i * 12, 1);
-		ctx.fillStyle = "#8a8a8a";
-		ctx.fillRect(10, 29, 44, 1);
+		rect(ctx, "#0c0c0c", 0, 0, 64, 40);
+		rect(ctx, "#1c1c1c", 0, 0, 64, 5);
+		for (let n = 0; n < 3; n++) rect(ctx, "#4a4a4a", 2 + n * 3, 2, 1, 1);
+		SLIDES[i](ctx);
 	};
 	const tex = pixelTexture(64, 40, drawPage);
 	let shown = -1; // -1 is the page itself
