@@ -51,6 +51,18 @@ const { world, title, description, label, heading, other } = Astro.props;
 				</p>
 			)
 		}
+		{
+			world === "praha" && (
+				<aside class="card" hidden aria-live="polite">
+					<button type="button" class="card-close" aria-label="Zavřít">
+						×
+					</button>
+					<p class="card-title" />
+					<div class="card-body" />
+					<p class="card-note">podle jízdního řádu PID</p>
+				</aside>
+			)
+		}
 		<p class="fallback">Tohle město potřebuje WebGL, které tady nejede.</p>
 	</body>
 </html>
@@ -211,6 +223,70 @@ const { world, title, description, label, heading, other } = Astro.props;
 		text-decoration-color: transparent;
 		text-shadow: none;
 		box-shadow: 0 0 0 0.25em var(--ink);
+	}
+
+	/* the card of a picked tram or train, next to it */
+	.card {
+		position: fixed;
+		z-index: 2;
+		max-width: min(20rem, calc(100vw - 2rem));
+		padding: 0.75rem 2rem 0.75rem 0.75rem;
+		background: var(--paper);
+		border: 2px solid var(--ink);
+		box-shadow: 4px 4px 0 var(--ink);
+		font-size: 0.5625rem;
+		line-height: 1.7;
+	}
+
+	.card[hidden] {
+		display: none;
+	}
+
+	.card-title {
+		font-size: 0.75rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.card-body p + p {
+		margin-top: 0.25rem;
+	}
+
+	.card-note {
+		margin-top: 0.5rem;
+		opacity: 0.6;
+		font-size: 0.5rem;
+	}
+
+	.card-close {
+		position: absolute;
+		top: 0.25rem;
+		right: 0.25rem;
+		font: inherit;
+		font-size: 0.75rem;
+		line-height: 1;
+		padding: 0.25rem 0.375rem;
+		color: var(--ink);
+		background: none;
+		border: 0;
+		cursor: pointer;
+	}
+
+	.card-close:hover,
+	.card-close:focus-visible {
+		background: var(--ink);
+		color: var(--paper);
+		outline: 0;
+	}
+
+	/* on a narrow screen the card sits at the bottom instead of following the vehicle */
+	@media (max-width: 600px) {
+		.card {
+			left: 1rem !important;
+			right: 1rem;
+			top: auto !important;
+			bottom: 3rem;
+			max-width: none;
+		}
 	}
 
 	.fallback {

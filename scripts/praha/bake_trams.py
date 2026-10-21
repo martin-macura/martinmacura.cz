@@ -11,11 +11,13 @@ day (a working day, Saturday, Sunday) and the page picks by the weekday of today
 
 layout of the decompressed data, all numbers LEB128 varints (signed ones zigzagged):
   routes count, then per route: its name length, the name (ascii)
+  names count, then per name: length, the name (utf-8): the stops and where the trips go, for the card of a vehicle
   tracks count, then per track: points count, then dx, dz (quarter units) from the last point; the rails, each street once
-  stops count, then per stop: dx, dz (quarter units) from the last stop, the heading (0..63 = 0..2 pi)
+  stops count, then per stop: dx, dz (quarter units) from the last stop, the heading (0..63 = 0..2 pi), its name
   labels count, then per label: dx, dz (quarter units) from the last label, name length, the name (ascii, capitals)
   shapes count, then per shape: points count, then dx, dz (quarter units), d metres from the last point
-  patterns count, then per pattern: route, shape, stops count, then per stop: arrival (s after the start), dwell (s), metres along the shape
+  patterns count, then per pattern: route, shape, where it goes (a name), stops count, then per stop: arrival (s after
+    the start), dwell (s), metres along the shape, the stop + 1 (0: off the map)
   trips count, then per trip, sorted by start: start - previous start (s after midnight, can pass 24 h), pattern, day mask (1 working day, 2 Saturday, 4 Sunday)
 Timetable: PID / ROPID, CC BY 4.0."""
 import csv, datetime, gzip, math, os, sys
@@ -64,7 +66,7 @@ for r in rows("trips.txt"):
     if r["route_id"] in routes:
         mask = sum(1 << k for k in range(3) if r["service_id"] in services[k])
         if mask:
-            trips[r["trip_id"]] = (r["route_id"], r["shape_id"], mask)
+            trips[r["trip_id"]] = (r["route_id"], r["shape_id"], mask, r["trip_headsign"])
 print(len(routes), "lines,", len(trips), "trips")
 
 times = {}
@@ -75,7 +77,7 @@ for r in rows("stop_times.txt"):
             continue
         times.setdefault(r["trip_id"], []).append((int(r["stop_sequence"]), secs(r["arrival_time"]), secs(r["departure_time"]), float(r["shape_dist_traveled"] or 0) * 1000, r["stop_id"]))
 
-want = {s for _, s, _ in trips.values()}
+want = {t[1] for t in trips.values()}
 shapes = {}
 for r in rows("shapes.txt"):
     if r["shape_id"] in want:
@@ -143,12 +145,12 @@ def stand(st):
             out[i] = (seq, a, d, m, stop)
     return out
 
-for tid, (rid, sid, mask) in trips.items():
+for tid, (rid, sid, mask, headsign) in trips.items():
     st = stand(sorted(times.get(tid, [])))
     if len(st) < 2 or sid not in shape_idx:
         continue
     t0 = st[0][1]
-    key = (route_idx[rid], shape_idx[sid], tuple((a - t0, d - a, int(round(m))) for _, a, d, m, _ in st))
+    key = (route_idx[rid], shape_idx[sid], headsign, tuple((a - t0, d - a, int(round(m)), stop) for _, a, d, m, stop in st))
     if key not in pattern_idx:
         pattern_idx[key] = len(patterns)
         patterns.append(key)
@@ -215,6 +217,14 @@ uv(len(route_ids))
 for r in route_ids:
     name = routes[r].encode("ascii", "replace")
     uv(len(name)); out.extend(name)
+stops = sorted(stop_heading, key=lambda s: (stop_pos[s][1], stop_pos[s][0]))
+stop_idx = {s: i for i, s in enumerate(stops)}
+names = sorted({stop_rows[s]["stop_name"] for s in stops} | {p[2] for p in patterns})
+name_idx = {n: i for i, n in enumerate(names)}
+uv(len(names))
+for n in names:
+    b = n.encode("utf-8")
+    uv(len(b)); out.extend(b)
 uv(len(tracks))
 for t in tracks:
     uv(len(t))
@@ -222,7 +232,6 @@ for t in tracks:
     for x, z in t:
         sv(q(x) - lx); sv(q(z) - lz)
         lx, lz = q(x), q(z)
-stops = sorted(stop_heading, key=lambda s: (stop_pos[s][1], stop_pos[s][0]))
 uv(len(stops))
 lx = lz = 0
 for s in stops:
@@ -230,6 +239,7 @@ for s in stops:
     sv(q(x) - lx); sv(q(z) - lz)
     lx, lz = q(x), q(z)
     uv(int(round(stop_heading[s] % (2 * math.pi) / (2 * math.pi) * 64)) % 64)
+    uv(name_idx[stop_rows[s]["stop_name"]])
 # one name per station, in the middle of its platforms (rail only); ascii capitals, like the names of /vlaky
 labels = {}
 if RAIL:
@@ -255,10 +265,10 @@ for pts_ in shape_pts:
         sv(q(x) - lx); sv(q(z) - lz); sv(int(round(m)) - lm)
         lx, lz, lm = q(x), q(z), int(round(m))
 uv(len(patterns))
-for r, s, st in patterns:
-    uv(r); uv(s); uv(len(st))
-    for a, dwell, m in st:
-        uv(a); uv(dwell); uv(m)
+for r, s, headsign, st in patterns:
+    uv(r); uv(s); uv(name_idx[headsign]); uv(len(st))
+    for a, dwell, m, stop in st:
+        uv(a); uv(dwell); uv(m); uv(stop_idx[stop] + 1 if stop in stop_idx else 0)
 uv(len(trip_recs))
 lt = 0
 for t0, p, mask in trip_recs:

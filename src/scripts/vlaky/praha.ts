@@ -465,6 +465,31 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		return {
 			simulate: (dt, focus) => all.forEach((e) => e.simulate(dt, focus)),
 			pose: () => all.forEach((e) => e.pose()),
+			// a click picks the nearest tram or train of all of them
+			pick(toScreen, px, py) {
+				let best: ReturnType<NonNullable<Extras["pick"]>> = null;
+				for (const e of all) {
+					const hit = e.pick?.(toScreen, px, py) ?? null;
+					if (hit && (!best || hit.dist < best.dist)) best = hit;
+				}
+				if (!best) return null;
+				const chosen = best;
+				return {
+					dist: chosen.dist,
+					select() {
+						for (const e of all) e.unselect?.();
+						chosen.select();
+					},
+				};
+			},
+			card: () => {
+				for (const e of all) {
+					const c = e.card?.();
+					if (c) return c;
+				}
+				return null;
+			},
+			unselect: () => all.forEach((e) => e.unselect?.()),
 		};
 	}
 

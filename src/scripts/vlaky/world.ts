@@ -15,10 +15,27 @@ export interface Focus {
 	far: boolean;
 }
 
+/** what a card next to a picked vehicle says, and where in the world the vehicle is */
+export interface Card {
+	x: number;
+	y: number;
+	z: number;
+	title: string;
+	lines: string[];
+}
+
+/** where on the screen a point of the world is, in CSS pixels of the page */
+export type ToScreen = (x: number, y: number, z: number) => [number, number];
+
 /** things a town adds that move: they are told what the view shows */
 export interface Extras {
 	simulate(dt: number, focus: Focus): void;
 	pose(): void;
+	/** the vehicle nearest to a click at (px, py), if any is near enough: how far it is, and how to pick it */
+	pick?(toScreen: ToScreen, px: number, py: number): { dist: number; select(): void } | null;
+	/** the card of the picked vehicle, or null when nothing is picked (any more) */
+	card?(): Card | null;
+	unselect?(): void;
 }
 
 export interface World {

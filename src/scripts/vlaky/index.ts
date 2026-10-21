@@ -308,9 +308,12 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		if (reduced) draw();
 	};
 
+	// a click (a tap) is a press that hardly moves and does not last: it picks a vehicle, where a town has them
+	let tap: { id: number; x: number; y: number; t: number; moved: number } | null = null;
 	canvas.addEventListener("pointerdown", (e) => {
 		canvas.setPointerCapture(e.pointerId);
 		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+		tap = pointers.size === 1 ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), moved: 0 } : null;
 		vel.x = vel.y = 0;
 		pinch = pointers.size === 2 ? pinchDistance() : 0;
 		canvas.classList.add("drag");
@@ -319,6 +322,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	canvas.addEventListener("pointermove", (e) => {
 		const p = pointers.get(e.pointerId);
 		if (!p) return;
+		if (tap && tap.id === e.pointerId) tap.moved = Math.max(tap.moved, Math.hypot(e.clientX - tap.x, e.clientY - tap.y));
 		const dx = e.clientX - p.x;
 		const dy = e.clientY - p.y;
 		p.x = e.clientX;
@@ -343,6 +347,8 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	});
 	const release = (e: PointerEvent) => {
 		pointers.delete(e.pointerId);
+		if (e.type === "pointerup" && tap && tap.id === e.pointerId && tap.moved < 8 && performance.now() - tap.t < 600) pickAt(e.clientX, e.clientY);
+		tap = null;
 		pinch = 0;
 		if (pointers.size === 0) {
 			canvas.classList.remove("drag");
@@ -374,6 +380,56 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		applyView();
 	};
 
+	// --- the card of a picked vehicle: it follows the vehicle on the screen
+	const cardEl = document.querySelector<HTMLElement>(".card");
+	const cardTitle = cardEl?.querySelector<HTMLElement>(".card-title");
+	const cardBody = cardEl?.querySelector<HTMLElement>(".card-body");
+	const projected = new Vector3();
+	const toScreen = (x: number, y: number, z: number): [number, number] => {
+		projected.set(x, y, z).project(camera);
+		const r = canvas.getBoundingClientRect();
+		return [r.left + ((projected.x + 1) / 2) * r.width, r.top + ((1 - projected.y) / 2) * r.height];
+	};
+	let cardText = "";
+	function showCard() {
+		if (!cardEl || !cardTitle || !cardBody) return;
+		const c = extras?.card?.() ?? null;
+		if (!c) {
+			if (!cardEl.hidden) cardEl.hidden = true;
+			cardText = "";
+			return;
+		}
+		const text = c.title + "\n" + c.lines.join("\n");
+		if (text !== cardText) {
+			cardText = text;
+			cardTitle.textContent = c.title;
+			cardBody.replaceChildren(...c.lines.map((l) => Object.assign(document.createElement("p"), { textContent: l })));
+		}
+		cardEl.hidden = false;
+		const [sx, sy] = toScreen(c.x, c.y, c.z);
+		const w = cardEl.offsetWidth;
+		const h = cardEl.offsetHeight;
+		cardEl.style.left = `${clamp(sx + 16, 8, innerWidth - w - 8)}px`;
+		cardEl.style.top = `${clamp(sy - h - 16, 8, innerHeight - h - 8)}px`;
+	}
+	function pickAt(px: number, py: number) {
+		if (!extras?.pick) return;
+		const hit = extras.pick(toScreen, px, py);
+		if (hit) hit.select();
+		else extras.unselect?.();
+		draw();
+	}
+	cardEl?.querySelector(".card-close")?.addEventListener("click", () => {
+		extras?.unselect?.();
+		draw();
+	});
+	addEventListener("keydown", (e) => {
+		if (e.key === "Escape" && cardEl && !cardEl.hidden) {
+			extras?.unselect?.();
+			draw();
+		}
+	});
+
 	const draw = () => {
 		updateChunks(reduced ? Infinity : 5);
 		railway?.traffic.pose();
@@ -381,6 +437,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		if (reduced) extras?.simulate(0, focus); // nothing else moves them along
 		extras?.pose();
 		renderer.render(scene, camera);
+		showCard();
 	};
 
 	if (import.meta.env.DEV) (window as unknown as { __vlaky: unknown }).__vlaky = { ...railway?.traffic, crossings: railway?.crossings.crossings, cars: railway?.cars, rails: railway?.rails, extras, focus, chunks, view, draw, camera, hillHeight, roadAt, isWater, setNight: (on: boolean) => (nightTarget = on ? 1 : 0) };
