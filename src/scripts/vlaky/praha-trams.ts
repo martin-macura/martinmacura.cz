@@ -2,11 +2,11 @@
 // praha-rail.dat): every one that runs now, by the clock of Prague, is where the timetable puts it, on the line it
 // runs on. Nothing is live: it is the plan, so a late tram in the street is on time here. The tracks, the stops and
 // the stations are drawn into the chunks. Timetable: PID / ROPID (CC BY 4.0).
-import { CanvasTexture, InstancedMesh, Mesh, MeshBasicMaterial, MeshLambertMaterial, NearestFilter, Object3D, type Scene, Sprite, SpriteMaterial } from "three";
+import { InstancedMesh, Mesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
 import { inChunk, walkSegment } from "./praha-roads";
 import { createLamps } from "./praha-traffic";
 import { COLORS, glass, unit } from "./util";
-import type { Card, Extras, Focus, ToScreen } from "./world";
+import type { Card, Extras, Focus, Place, ToScreen } from "./world";
 
 const CH = 32;
 const M = 6; // metres in a unit
@@ -425,31 +425,6 @@ export function lineBoxes(
 	}
 }
 
-/** a sign with the name of a station, as wide as the name needs */
-function labelSprite(text: string) {
-	const c = document.createElement("canvas");
-	const w = Math.max(64, text.length * 8 + 8);
-	c.width = w;
-	c.height = 16;
-	const g = c.getContext("2d")!;
-	g.fillStyle = "#f2f2f2";
-	g.fillRect(0, 0, w, 16);
-	g.fillStyle = "#0c0c0c";
-	g.fillRect(0, 0, w, 1);
-	g.fillRect(0, 15, w, 1);
-	g.font = '8px "Press Start 2P", monospace';
-	g.textBaseline = "middle";
-	g.textAlign = "center";
-	g.fillText(text, w / 2, 9);
-	const tex = new CanvasTexture(c);
-	tex.magFilter = NearestFilter;
-	tex.minFilter = NearestFilter;
-	const sprite = new Sprite(new SpriteMaterial({ map: tex, depthTest: false }));
-	sprite.renderOrder = 10; // signs stay readable even behind a building
-	sprite.scale.set((w / 16) * 2.2, 2.2, 1);
-	return sprite;
-}
-
 /** the seconds since midnight in Prague, and what kind of day it is there (1 working day, 2 Saturday, 4 Sunday) */
 const pragueClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Prague", weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 const KIND: Record<string, number> = { Mon: 1, Tue: 1, Wed: 1, Thu: 1, Fri: 1, Sat: 2, Sun: 4 };
@@ -550,14 +525,27 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 		return s ? data.names[data.stops[s - 1].name] : "";
 	};
 
-	// the names of the stations, shown near the view
-	const signs = data.labels.map((l) => {
-		const sprite = labelSprite(l.name);
-		sprite.position.set(l.x, groundAt(l.x, l.z) + 3.2, l.z);
-		sprite.visible = false;
-		scene.add(sprite);
-		return sprite;
-	});
+	// the names of the stations (or the stops): one in the middle of the platforms of the same name, unless they lie apart
+	const places: Place[] = [];
+	{
+		const groups: { name: string; x: number; z: number; n: number }[] = [];
+		for (const st of data.stops) {
+			// "Praha hlavní nádraží" is Hlavní nádraží here, "Praha-Libeň" Libeň
+			let name = data.names[st.name].replace(/^Praha[- ]/, "").replace(/ nádr\.$/, " nádraží");
+			name = name[0].toUpperCase() + name.slice(1);
+			const g = groups.find((g) => g.name === name && Math.hypot(g.x / g.n - st.x, g.z / g.n - st.z) < 25);
+			if (g) {
+				g.x += st.x;
+				g.z += st.z;
+				g.n++;
+			} else groups.push({ name, x: st.x, z: st.z, n: 1 });
+		}
+		for (const g of groups) {
+			const x = g.x / g.n;
+			const z = g.z / g.n;
+			places.push({ x, y: groundAt(x, z) + (style.rail ? 1.6 : 0.8), z, name: g.name, rank: style.rail ? 0 : 1 });
+		}
+	}
 
 	return {
 		simulate(_dt, f) {
@@ -572,7 +560,6 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 			}
 			const { secs } = prague(now);
 			const reach = focus.r * 1.3;
-			for (const sign of signs) sign.visible = !focus.far && Math.abs(sign.position.x - focus.x) < reach && Math.abs(sign.position.z - focus.z) < reach;
 			let n = 0;
 			const lit = lamps.begin();
 			drawn.length = 0;
@@ -630,6 +617,7 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 				m.instanceMatrix.needsUpdate = true;
 			}
 		},
+		places: () => places,
 		pick(toScreen: ToScreen, px: number, py: number) {
 			let best: (typeof drawn)[number] | null = null;
 			let dist = 22; // CSS pixels: a vehicle is small, the finger is not

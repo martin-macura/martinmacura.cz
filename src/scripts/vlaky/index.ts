@@ -18,7 +18,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { buildRailScenery, carvePoints, createRails, stationSites, useLayout } from "./rails";
 import { createCrossings } from "./crossings";
 import { CH, fictionWorld } from "./terrain";
-import type { Chunk, Focus, World } from "./world";
+import type { Chunk, Focus, Place, World } from "./world";
 import { createTraffic } from "./trains";
 import { box, clamp, COLORS, glass, glow, rng, unit } from "./util";
 
@@ -265,10 +265,13 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	}
 
 	let boost = 0; // chunkier pixels, once the device has shown that it cannot keep up
+	let fine = false; // a step finer pixels, zoomed in close
+	let fineOK = true; // until the finer pixels have proved too many for the device
 	function resize() {
 	const w = canvas.clientWidth || innerWidth;
 	const h = canvas.clientHeight || innerHeight;
-	const pixel = Math.min(9, Math.max(2, Math.round(Math.max(w, h) / 560)) + boost);
+	const base = Math.round(Math.max(w, h) / 560);
+	const pixel = Math.min(9, Math.max(2, base - (fine && boost === 0 ? 1 : 0)) + boost);
 		renderer.setPixelRatio(1 / pixel);
 		renderer.setSize(w, h, false);
 		frame(w, h);
@@ -385,10 +388,10 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 	const cardTitle = cardEl?.querySelector<HTMLElement>(".card-title");
 	const cardBody = cardEl?.querySelector<HTMLElement>(".card-body");
 	const projected = new Vector3();
+	// the canvas fills the window
 	const toScreen = (x: number, y: number, z: number): [number, number] => {
 		projected.set(x, y, z).project(camera);
-		const r = canvas.getBoundingClientRect();
-		return [r.left + ((projected.x + 1) / 2) * r.width, r.top + ((1 - projected.y) / 2) * r.height];
+		return [((projected.x + 1) / 2) * viewW, ((1 - projected.y) / 2) * viewH];
 	};
 	let cardText = "";
 	function showCard() {
@@ -430,13 +433,73 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		}
 	});
 
+	// --- the names of the stations: sharp text over the coarse pixels, the stations first, the stops only close up
+	const namesEl = document.querySelector<HTMLElement>(".names");
+	const places: Place[] = extras?.places?.() ?? railway?.traffic.stations.map((st) => ({ x: st.sign.x, y: st.sign.y, z: st.sign.z, name: st.name, rank: 0 })) ?? [];
+	// a stop with the name of a station next to it says nothing new
+	const named = places.filter((p) => p.rank === 0);
+	const shown = places.filter((p) => p.rank === 0 || !named.some((q) => q.name === p.name && Math.hypot(q.x - p.x, q.z - p.z) < 30)).sort((a, b) => a.rank - b.rank);
+	const NAMES_FROM = [0.9, 0.32]; // how close (world units per CSS pixel) the view must be for each rank
+	const tags: HTMLElement[] = [];
+	const boxes: number[] = [];
+	const chrome = [...document.querySelectorAll<HTMLElement>("header, .mode, .credit, .hint")]; // no names under these
+	function showNames() {
+		if (!namesEl) return;
+		const upp = unitsPerPx();
+		let used = 0;
+		boxes.length = 0;
+		for (const el of chrome) {
+			const r = el.getBoundingClientRect();
+			if (r.width) boxes.push(r.left, r.top, r.right, r.bottom);
+		}
+		for (const p of shown) {
+			if (upp > NAMES_FROM[p.rank] || used >= 60) break;
+			let [sx, sy] = toScreen(p.x, p.y, p.z);
+			if (sx < 0 || sx > viewW || sy < 0 || sy > viewH) continue;
+			// the tag sits above the point, whole on the screen: its size by the letters of the pixel font
+			const em = p.rank ? 8 : 10;
+			const w = p.name.length * em + 12;
+			const h = em + 12;
+			sx = clamp(sx, w / 2 + 4, viewW - w / 2 - 4);
+			sy = Math.max(sy, h + 4);
+			const x0 = sx - w / 2;
+			const y0 = sy - h;
+			let free = true;
+			for (let i = 0; i < boxes.length && free; i += 4) free = x0 > boxes[i + 2] || x0 + w < boxes[i] || y0 > boxes[i + 3] || y0 + h < boxes[i + 1];
+			if (!free) continue;
+			boxes.push(x0 - 4, y0 - 2, x0 + w + 4, y0 + h + 2);
+			let tag = tags[used];
+			if (!tag) {
+				tag = tags[used] = document.createElement("span");
+				namesEl.append(tag);
+			}
+			if (tag.textContent !== p.name) tag.textContent = p.name;
+			const cls = p.rank ? "stop" : "station";
+			if (tag.className !== cls) tag.className = cls;
+			tag.style.transform = `translate(${Math.round(sx)}px, ${Math.round(sy)}px) translate(-50%, -100%)`;
+			tag.hidden = false;
+			used++;
+		}
+		for (let i = used; i < tags.length; i++) if (!tags[i].hidden) tags[i].hidden = true;
+	}
+	function refine() {
+		// zoomed in to under 60 % of the first view: a step finer pixels, with some slack so that it does not flicker at the edge
+		const want = fineOK && view.k < (fine ? 0.7 : 0.6);
+		if (want !== fine) {
+			fine = want;
+			resize();
+		}
+	}
+
 	const draw = () => {
+		refine(); // before the render: a resize clears the canvas
 		updateChunks(reduced ? Infinity : 5);
 		railway?.traffic.pose();
 		railway?.cars.pose();
 		if (reduced) extras?.simulate(0, focus); // nothing else moves them along
 		extras?.pose();
 		renderer.render(scene, camera);
+		showNames();
 		showCard();
 	};
 
@@ -486,8 +549,10 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		lastDraw = now;
 		if (gap > 40 && gap < 250 && now - boostedAt > 2500) slow++;
 		else if (gap <= 40) slow = Math.max(0, slow - 2);
-		if (slow > 40 && boost < 3) {
-			boost++;
+		if (slow > 40 && (fine || boost < 3)) {
+			// the finer pixels go first, for good; then the pixels grow
+			if (fine) fineOK = fine = false;
+			else boost++;
 			slow = 0;
 			boostedAt = now;
 			resize();

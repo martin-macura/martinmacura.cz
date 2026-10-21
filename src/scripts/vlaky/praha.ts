@@ -490,6 +490,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				return null;
 			},
 			unselect: () => all.forEach((e) => e.unselect?.()),
+			places: () => all.flatMap((e) => e.places?.() ?? []),
 		};
 	}
 

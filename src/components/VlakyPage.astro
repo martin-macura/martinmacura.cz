@@ -28,6 +28,7 @@ const { world, title, description, label, heading, other } = Astro.props;
 	</head>
 	<body>
 		<canvas class="scene" role="img" aria-label={label} data-world={world}></canvas>
+		<div class="names" aria-hidden="true"></div>
 		<header>
 			<a href="/">← martinmacura.cz</a>
 			<h1>{heading}</h1>
@@ -223,6 +224,49 @@ const { world, title, description, label, heading, other } = Astro.props;
 		text-decoration-color: transparent;
 		text-shadow: none;
 		box-shadow: 0 0 0 0.25em var(--ink);
+	}
+
+	/* the names of the stations and stops, written sharp over the coarse pixels of the scene */
+	.names {
+		position: fixed;
+		inset: 0;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.names span {
+		position: absolute;
+		left: 0;
+		top: 0;
+		white-space: nowrap;
+		line-height: 1;
+	}
+
+	.names span[hidden] {
+		display: none;
+	}
+
+	.names .station {
+		font-size: 0.625rem;
+		padding: 0.3125rem 0.375rem 0.25rem;
+		background: var(--ink);
+		color: var(--paper);
+		border: 2px solid var(--paper);
+	}
+
+	.names .stop {
+		font-size: 0.5rem;
+		padding: 0.25rem;
+		color: var(--ink);
+		text-shadow:
+			2px 0 var(--paper),
+			-2px 0 var(--paper),
+			0 2px var(--paper),
+			0 -2px var(--paper),
+			2px 2px var(--paper),
+			-2px 2px var(--paper),
+			2px -2px var(--paper),
+			-2px -2px var(--paper);
 	}
 
 	/* the card of a picked tram or train, next to it */

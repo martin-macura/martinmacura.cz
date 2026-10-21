@@ -1,5 +1,5 @@
 // Trains of all sorts, the stations, and the people on the platforms.
-import { Group, Mesh, MeshBasicMaterial, type Scene, Sprite, SpriteMaterial, CanvasTexture, NearestFilter, Vector3 } from "three";
+import { Group, Mesh, MeshBasicMaterial, type Scene, Vector3 } from "three";
 import { type Edge, edgeAt, LINES, type Rails, type StationSite } from "./rails";
 import { type Box, box, COLORS, glass, glow, meshFromBoxes, unit } from "./util";
 
@@ -53,6 +53,8 @@ export interface Station extends StationSite {
 	people: Person[];
 	slots: (Person | null)[];
 	train: Train | null;
+	/** where its name is written, over the sign on its post */
+	sign: Vector3;
 }
 
 const SLOTS: [number, number][] = [-4.5, -3, -1.5, 0, 1.5, 3, 4.5].map((u, i) => [u, i % 2 ? 1.95 : 1.35]);
@@ -192,26 +194,6 @@ const SPECS: TrainSpec[] = [
 	{ line: "outer", ri: 11, d: 20, body: 0xff9f2f, stripe: COLORS.dark, cars: ["railcar"], stops: "all", vmax: 4.4 },
 ];
 
-const labelTexture = (text: string) => {
-	const c = document.createElement("canvas");
-	c.width = 64;
-	c.height = 16;
-	const g = c.getContext("2d")!;
-	g.fillStyle = "#f2f2f2";
-	g.fillRect(0, 0, 64, 16);
-	g.fillStyle = "#0c0c0c";
-	g.fillRect(0, 0, 64, 1);
-	g.fillRect(0, 15, 64, 1);
-	g.font = `${text.length > 7 ? 7 : 8}px "Press Start 2P", monospace`;
-	g.textBaseline = "middle";
-	g.textAlign = "center";
-	g.fillText(text, 32, 9);
-	const tex = new CanvasTexture(c);
-	tex.magFilter = NearestFilter;
-	tex.minFilter = NearestFilter;
-	return tex;
-};
-
 export function createTraffic(
 	scene: Scene,
 	rails: Rails,
@@ -224,7 +206,7 @@ export function createTraffic(
 	// --- stations
 	const stations: Station[] = sites.map((site) => {
 		const { origin, t, n } = site;
-		const station: Station = { ...site, people: [], slots: SLOTS.map(() => null), train: null };
+		const station: Station = { ...site, people: [], slots: SLOTS.map(() => null), train: null, sign: new Vector3() };
 		const place = (u: number, v: number) => origin.clone().addScaledVector(t, u).addScaledVector(n, v);
 		const yaw = Math.atan2(t.x, t.z);
 		const plat = box(scene, 1.6, 0.25, 11, COLORS.platform, 0, 0.125, 0);
@@ -243,11 +225,7 @@ export function createTraffic(
 		}
 		const post = place(-5.2, 2.35);
 		box(scene, 0.1, 2, 0.1, COLORS.dark, post.x, 1.2, post.z);
-		const label = new Sprite(new SpriteMaterial({ map: labelTexture(site.name), depthTest: false }));
-		label.renderOrder = 10; // signs stay readable even behind a building
-		label.scale.set(5.6, 1.4, 1);
-		label.position.set(post.x + t.x, 2.7, post.z + t.z);
-		scene.add(label);
+		station.sign.set(post.x + t.x, 2.7, post.z + t.z);
 		for (let i = 0; i < 9; i++) {
 			const mesh = meshFromBoxes([
 				[0.2, 0.14, 0.14, COLORS.dark, 0, 0.07, 0, 0],

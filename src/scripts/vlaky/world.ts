@@ -24,6 +24,15 @@ export interface Card {
 	lines: string[];
 }
 
+/** a named place of the town: a station (rank 0, shown first and from further away) or a stop (rank 1) */
+export interface Place {
+	x: number;
+	y: number;
+	z: number;
+	name: string;
+	rank: number;
+}
+
 /** where on the screen a point of the world is, in CSS pixels of the page */
 export type ToScreen = (x: number, y: number, z: number) => [number, number];
 
@@ -36,6 +45,8 @@ export interface Extras {
 	/** the card of the picked vehicle, or null when nothing is picked (any more) */
 	card?(): Card | null;
 	unselect?(): void;
+	/** the names to write over the scene */
+	places?(): Place[];
 }
 
 export interface World {
