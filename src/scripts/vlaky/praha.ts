@@ -329,6 +329,13 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			// on the ballast of a railway, or on the platforms of a station.
 			const near: { xs: Float32Array; zs: Float32Array; segs: number[]; margin: number }[] = [];
 			if (trams) near.push({ xs: trams.tx, zs: trams.tz, segs: trams.trackByChunk.get(cx * 1000 + cz) ?? [], margin: -0.2 });
+			// a house over an avenue or a motorway (its footprint, drawn as the smallest rectangle around it, can reach over
+			// one) goes when the middle of the road runs well inside it; the lanes of the old town pass along the walls, so the
+			// streets are left out
+			if (roads) {
+				const wide = (roads.byChunk.get(cx * 1000 + cz) ?? []).filter((i) => roads.cls[roads.segEdge[i]] >= 2);
+				if (wide.length) near.push({ xs: roads.px, zs: roads.pz, segs: wide, margin: -0.3 });
+			}
 			if (metro) near.push({ xs: metro.tx, zs: metro.tz, segs: metro.trackByChunk.get(cx * 1000 + cz) ?? [], margin: 0.6 });
 			if (trains) {
 				near.push({ xs: trains.tx, zs: trains.tz, segs: trains.trackByChunk.get(cx * 1000 + cz) ?? [], margin: 0.6 });
