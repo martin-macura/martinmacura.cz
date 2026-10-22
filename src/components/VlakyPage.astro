@@ -38,28 +38,30 @@ const { world, title, description, label, heading, other } = Astro.props;
 			<button type="button" data-mode="day">DEN</button>
 			<button type="button" data-mode="night">NOC</button>
 		</div>
-		<p class="hint" aria-hidden="true">TÁHNI = POSUN · KOLEČKO = ZOOM</p>
-		{
-			world === "praha" && (
-				<p class="credit">
-					<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">
-						© OpenStreetMap contributors
-					</a>
-					{" · "}
-					<a href="https://pid.cz/o-systemu/opendata/" target="_blank" rel="noopener noreferrer">
-						jízdní řády PID (CC BY 4.0)
-					</a>
-					{" · "}
-					<a href="https://geoportal.cuzk.gov.cz/Default.aspx?mode=TextMeta&text=vyskopisZBG&side=vyskopis&head_tab=sekce-02-gp&menu=30" target="_blank" rel="noopener noreferrer">
-						výškopis DMR 4G: ČÚZK, 2025 (CC BY 4.0, zjednodušeno)
-					</a>
-					{" · "}
-					<a href="https://www.geoportalpraha.cz/data-a-sluzby/otevrena-data" target="_blank" rel="noopener noreferrer">
-						podlažnosti: data base © IPR Praha (CC BY 4.0)
-					</a>
-				</p>
-			)
-		}
+		<div class="foot">
+			{
+				world === "praha" && (
+					<p class="credit">
+						<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">
+							© OpenStreetMap contributors
+						</a>
+						{" · "}
+						<a href="https://pid.cz/o-systemu/opendata/" target="_blank" rel="noopener noreferrer">
+							jízdní řády PID (CC BY 4.0)
+						</a>
+						{" · "}
+						<a href="https://geoportal.cuzk.gov.cz/Default.aspx?mode=TextMeta&text=vyskopisZBG&side=vyskopis&head_tab=sekce-02-gp&menu=30" target="_blank" rel="noopener noreferrer">
+							výškopis DMR 4G: ČÚZK, 2025 (CC BY 4.0, zjednodušeno)
+						</a>
+						{" · "}
+						<a href="https://www.geoportalpraha.cz/data-a-sluzby/otevrena-data" target="_blank" rel="noopener noreferrer">
+							podlažnosti: data base © IPR Praha (CC BY 4.0)
+						</a>
+					</p>
+				)
+			}
+			<p class="hint" aria-hidden="true">TÁHNI = POSUN · KOLEČKO = ZOOM</p>
+		</div>
 		{
 			world === "praha" && (
 				<aside class="card" hidden aria-live="polite">
@@ -191,12 +193,30 @@ const { world, title, description, label, heading, other } = Astro.props;
 		font-size: 0.625rem;
 	}
 
-	.credit {
+	/* the credits and the hint share a row at the foot: the credits take what the hint leaves and wrap, and on a narrow
+	   screen the hint drops under them */
+	.foot {
 		position: fixed;
 		left: 1rem;
+		right: 1rem;
 		bottom: 1rem;
 		z-index: 1;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		justify-content: space-between;
+		gap: 0.5rem 1.5rem;
+		pointer-events: none;
+	}
+
+	.foot > * {
+		pointer-events: auto;
+	}
+
+	.credit {
+		flex: 1 1 22rem;
 		font-size: 0.5rem;
+		line-height: 1.7;
 		text-shadow:
 			2px 0 var(--paper),
 			-2px 0 var(--paper),
@@ -204,13 +224,14 @@ const { world, title, description, label, heading, other } = Astro.props;
 			0 -2px var(--paper);
 	}
 
-	.hint {
-		left: auto;
-		right: 1rem;
-		bottom: 1rem;
+	.foot .hint {
+		position: static;
+		flex: 0 0 auto;
+		margin-left: auto;
 		font-size: 0.625rem;
 		text-align: right;
 		transition: opacity 0.6s ease;
+		pointer-events: none;
 	}
 
 	.touched .hint {
