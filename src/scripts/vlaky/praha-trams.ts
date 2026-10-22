@@ -247,8 +247,9 @@ export function parseTrams(buf: ArrayBuffer): TramData {
  * in a tunnel (the hill hides it), where it lies lower on an embankment, and over the water on a bridge. Returns the
  * height of the bed near (x, z), or NaN away from the railway.
  */
-export function railProfile(data: TramData, terrain: (x: number, z: number) => number, isWater: (x: number, z: number) => boolean) {
-	const GRADE = 0.012; // height units per unit along: 2 %
+/** `under` marks the tunnels: through them the bed runs straight from one portal to the other, whatever the hill */
+export function railProfile(data: TramData, terrain: (x: number, z: number) => number, isWater: (x: number, z: number) => boolean, under?: (x: number, z: number) => boolean) {
+	const GRADE = 0.03; // height units per unit along: 2 % (the hills are raised half again)
 	const WINDOW = 25; // samples to each side, for the average
 	const HILL = 100; // samples to each side: a hill narrower than twice this (some 1.2 km) is gone through, not over
 	const BRIDGE = 0.5; // the least height over the water
@@ -301,6 +302,22 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 		const n = xs.length;
 		if (!n) continue;
 		const raw = xs.map((x, k) => terrain(x, zs[k]));
+		if (under) {
+			// in a tunnel the land over it says nothing: the line from the portal before to the portal after
+			let k = 0;
+			while (k < n) {
+				if (!under(xs[k], zs[k])) {
+					k++;
+					continue;
+				}
+				let e = k;
+				while (e < n && under(xs[e], zs[e])) e++;
+				const a = k > 0 ? raw[k - 1] : e < n ? raw[e] : 0;
+				const b = e < n ? raw[e] : a;
+				for (let j = k; j < e; j++) raw[j] = a + ((b - a) * (j - k + 1)) / (e - k + 1);
+				k = e;
+			}
+		}
 		// the hills narrower than a tunnel taken away (the least land around, then the most of that: a plateau stays),
 		// then a running average
 		const t = slide(slide(raw, HILL, false), HILL, true);
@@ -387,7 +404,7 @@ export function lineBoxes(
 		return Number.isNaN(h) ? ground(x, z) : h;
 	};
 	// in a tunnel: the hill stands well above the bed
-	const railSkip = (x: number, z: number) => skip(x, z) || ground(x, z) > railGround(x, z) + 0.7;
+	const railSkip = (x: number, z: number) => skip(x, z) || ground(x, z) > railGround(x, z) + 1.2;
 	for (const i of data.trackByChunk.get(cx * 1000 + cz) ?? []) {
 		const dx = tx[i + 1] - tx[i];
 		const dz = tz[i + 1] - tz[i];
@@ -468,7 +485,8 @@ function prague(now: number) {
 	return { secs, today: KIND[parts.weekday] ?? 1, yesterday: BEFORE[parts.weekday] ?? 1 };
 }
 
-export function createTrams(scene: Scene, data: TramData, style: LineStyle, groundAt: (x: number, z: number) => number): Extras {
+/** `visible` says where a car of it can be seen (not in a tunnel); everywhere when absent */
+export function createTrams(scene: Scene, data: TramData, style: LineStyle, groundAt: (x: number, z: number) => number, visible?: (x: number, z: number) => boolean): Extras {
 	const { tripStart, tripPattern, tripMask, patterns, shapeStart, sx, sz, sm } = data;
 
 	// what runs now: looked up again every few seconds; a trip is [start, start + its length]
@@ -538,7 +556,8 @@ export function createTrams(scene: Scene, data: TramData, style: LineStyle, grou
 	const dummy = new Object3D();
 	let focus: Focus | null = null;
 	const lamps = createLamps(scene, max);
-	const seen = style.hidden ? nearTrack(data) : () => true;
+	const onTrack = style.hidden ? nearTrack(data) : null;
+	const seen = (x: number, z: number) => (!onTrack || onTrack(x, z)) && (!visible || visible(x, z));
 
 	// the vehicles drawn in the last frame, by the middle of their middle car, for picking one by a click
 	const drawn: { trip: number; offset: number; x: number; y: number; z: number }[] = [];

@@ -12,7 +12,7 @@ for j in range(H):
     for i in range(W):
         x, z = x0 + i / sc, z0 + j / sc
         gx, gz = int(x + ISLE_X), int(z + ISLE_Z)
-        c = cells[gz, gx]; h = int(steps[gz // 2, gx // 2])
+        c = cells[gz, gx]; h = int(steps[gz // 2, gx // 2]) // 8  # in steps of 8 m
         col = (225 - h * 10, 222 - h * 9, 205 - h * 10)
         if (c >> 4) & 3: col = (170 - h * 8, 205 - h * 6, 150 - h * 8)
         if c & 1: col = (110, 160, 215)

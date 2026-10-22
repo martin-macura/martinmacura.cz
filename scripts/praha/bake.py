@@ -2,14 +2,16 @@
 """Step 2: turns the cache into public/vlaky/praha.dat (gzip), the one file the /vlaky/praha scene loads.
 
 layout of the decompressed data (little endian):
-  u16 0, u16 width, u16 height, i16 x0, i16 z0    the grid, one cell per unit; x0, z0 is where the first cell is in the world
+  u16 1, u16 width, u16 height, i16 x0, i16 z0    the grid (0: the terrain is not by rows, see below), one cell per unit; x0, z0 is where the first cell is in the world
                                    (a file from before this header starts with the width and height, and is centred on (0, 0))
-  width*height bytes               per cell: bit0 water, bits1-2 road (0 none, 1 street, 2 avenue, 3 motorway), bit3 bridge, bits4-5 green (0 none, 1 park, 2 wood)
-  (width/2)*(height/2) bytes       terrain, for every 2 x 2 cells: steps of 8 m above the river
+  width*height bytes               per cell: bit0 water, bits1-2 road (0 none, 1 street, 2 avenue, 3 motorway), bit3 bridge, bits4-5 green (0 none, 1 park, 2 wood),
+                                   bit6 a railway tunnel under the ground
+  (width/2)*(height/2) bytes       terrain, for every 2 x 2 cells: metres above the river; with 1 in the header every row but the first
+                                   is the difference from the row above, modulo 256
   u32 count, then count * 10 bytes buildings: i16 x*4, i16 z*4, u8 w*8, u8 d*8, u8 angle (0..255 = 0..pi), u8 metres, u8 kind (1 church, 2 flat roof, 4 big)
-Data: (c) OpenStreetMap contributors, ODbL; terrain: DMR 4G (c) ČÚZK where fetched, else terrain tiles (terrarium) built from public elevation data.
+Data: (c) OpenStreetMap contributors, ODbL; storeys and roofs: data base © IPR Praha, CC BY 4.0 (Podlažnosti); terrain: DMR 4G, ČÚZK, 2025, CC BY 4.0 (modified: the mean of 3 x 3 samples per 12 m, in whole metres above the river) where fetched, else terrain tiles (terrarium) built from public elevation data.
 Run: PRAHA_FULL=1 uv run --python 3.12 --with numpy --with pillow --with tifffile --with imagecodecs --with pyproj python bake.py"""
-import gzip, io, math, os, struct
+import gzip, io, json, math, os, struct
 import numpy as np
 from PIL import Image, ImageDraw
 from common import *
@@ -62,8 +64,17 @@ for wood in (False, True):
         for r in outs: gd.polygon([cell(p) for p in r], fill=2 if wood else 1)
         for r in ins: gd.polygon([cell(p) for p in r], fill=0)
 
-W8, R8, B8, G8 = (np.array(i, dtype=np.uint8) for i in (water, road, bridge, green))
-cells = (W8 & 1) | ((R8 & 3) << 1) | ((B8 & 1) << 3) | ((G8 & 3) << 4)
+# --- the tunnels of the railway (Vítkov and the others): the page keeps the hill over them and the trains out of sight
+tunnel = Image.new("L", (GW, GH), 0)
+td = ImageDraw.Draw(tunnel)
+tunnels_path = os.path.join(CACHE, "railtunnels.json")
+if os.path.exists(tunnels_path):
+    for e in json.load(open(tunnels_path))["elements"]:
+        if e["tags"].get("railway") != "subway" and "geometry" in e:
+            td.line([cell(p) for p in pts(e["geometry"])], fill=1, width=3)
+
+W8, R8, B8, G8, T8 = (np.array(i, dtype=np.uint8) for i in (water, road, bridge, green, tunnel))
+cells = (W8 & 1) | ((R8 & 3) << 1) | ((B8 & 1) << 3) | ((G8 & 3) << 4) | ((T8 & 1) << 6)
 # a road over water is always a bridge, even where the map forgot to say so
 cells = np.where((W8 == 1) & (R8 > 0), cells | 8, cells).astype(np.uint8)
 
@@ -138,7 +149,7 @@ if sheets:
 wat = W8.reshape(hz, 2, hx, 2).max(axis=(1, 3)) == 1
 base = float(np.median(elev[wat & (elev > 100)]))
 print("river level", base)
-steps = np.clip(np.floor((elev - base + 3) / 8), 0, 255).astype(np.uint8)
+steps = np.clip(np.floor(elev - base + 0.5), 0, 255).astype(np.uint8)  # in whole metres: the page smooths them
 steps[wat] = 0
 
 # --- buildings: every footprint becomes its smallest enclosing rectangle
@@ -162,11 +173,46 @@ def min_rect(poly):
     cu, cv = (u0 + u1) / 2, (v0 + v1) / 2
     return cu * c - cv * s, cu * s + cv * c, u1 - u0, v1 - v0, math.atan2(s, c)
 
-def metres(t, area):
+# --- the storeys and the roofs of IPR Praha (Podlažnosti, CC BY 4.0, data base © IPR Praha), where fetched: their
+# outlines drawn into a raster of 3 m with the number of the outline, so that a house of OpenStreetMap finds the one
+# under its middle
+ipr_path = os.path.join(CACHE, "ipr", "podlaznosti.geojson")
+ipr, ipr_img = [], None
+if os.path.exists(ipr_path):
+    ipr_img = Image.new("I", (GW * 2, GH * 2), 0)
+    idr = ImageDraw.Draw(ipr_img)
+    for f in json.load(open(ipr_path, encoding="utf-8"))["features"]:
+        p, g = f["properties"], f["geometry"]
+        if not g or not p.get("podlaz_celk"):
+            continue
+        ipr.append((p["podlaz_celk"], p.get("typ"), p.get("strecha")))
+        polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
+        for poly in polys:
+            ring = [((x - GX0) * 2, (z - GZ0) * 2) for x, z in (project(lat, lon) for lon, lat in poly[0])]
+            if len(ring) > 2:
+                idr.polygon(ring, fill=len(ipr))
+    ipr_img = np.array(ipr_img)
+    print(len(ipr), "outlines of IPR Praha with their storeys")
+
+def ipr_at(x, z):
+    """(storeys, kind of object, roof) of IPR under (x, z), or None"""
+    if ipr_img is None:
+        return None
+    i, j = int((x - GX0) * 2), int((z - GZ0) * 2)
+    if not (0 <= i < ipr_img.shape[1] and 0 <= j < ipr_img.shape[0]):
+        return None
+    k = int(ipr_img[j, i])
+    return ipr[k - 1] if k else None
+
+def metres(t, area, at=None):
     def num(s):
         try: return float(str(s).split()[0].replace(",", "."))
         except Exception: return None
     h = num(t["height"]) if "height" in t else None
+    if h is None and at:
+        storeys, typ, roof = at
+        # old houses (7) have high ceilings; a pitched roof adds its height
+        h = storeys * (3.8 if typ == 7 else 3.2) + (2.5 if roof == 1 else 1)
     if h is None and "building:levels" in t:
         lv = num(t["building:levels"])
         h = lv * 3.2 + 2 if lv else None
@@ -197,13 +243,18 @@ for el in load_many("buildings-*"):
         if t.get("building") in ("church", "cathedral", "chapel", "monastery") or t.get("amenity") == "place_of_worship": kind |= 1
         if t.get("roof:shape") == "flat": kind |= 2
         if t.get("building") in ("industrial", "commercial", "retail", "warehouse", "office"): kind |= 4
-        recs.append((int(round(x * 4)), int(round(z * 4)), min(255, int(round(w * 8))), min(255, int(round(d * 8))), min(255, int(ang / math.pi * 256)), int(round(metres(t, w * d * M * M))), kind))
+        at = ipr_at(x, z)
+        if at and at[2] == 3: kind |= 2  # flat, says IPR
+        elif at and at[2] == 1: kind &= ~2  # pitched
+        recs.append((int(round(x * 4)), int(round(z * 4)), min(255, int(round(w * 8))), min(255, int(round(d * 8))), min(255, int(ang / math.pi * 256)), min(255, int(round(metres(t, w * d * M * M, at)))), kind))
 print(len(recs), "buildings")
 
 buf = io.BytesIO()
-buf.write(struct.pack("<HHHhh", 0, GW, GH, GX0, GZ0))  # 0: the header with the position of the grid
+buf.write(struct.pack("<HHHhh", 1, GW, GH, GX0, GZ0))  # 1: the header with the position of the grid, the terrain by rows
 buf.write(cells.tobytes())
-buf.write(steps.tobytes())
+rows = steps.astype(np.int16)
+rows[1:] -= steps[:-1]
+buf.write((rows & 255).astype(np.uint8).tobytes())  # each row as the difference from the one above: it packs smaller
 buf.write(struct.pack("<I", len(recs)))
 for r in recs:
     buf.write(struct.pack("<hhBBBBB", *r) + b"\0")  # padded to 10 bytes
