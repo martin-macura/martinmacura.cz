@@ -88,9 +88,10 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 
 	// --- the town around it is built in chunks, where the camera looks
 	const buildChunk = world.createChunkBuilder(railDist, roadOK);
-	const chunks = new Map<string, { chunk: Chunk; seen: number; far: boolean }>();
+	const chunks = new Map<string, { chunk: Chunk; seen: number; far: boolean; coarse: boolean }>();
 	let tick = 0;
 	let far = false; // zoomed out: the town is built coarser
+	let coarse = false; // zoomed far out: coarser still, and with fewer boxes
 	let chunkDirty = true; // the view moved since the chunks were last looked at
 	let pending = 0; // chunks still waiting to be built
 	let night = options.night ? 1 : 0; // 0 is day, 1 is night
@@ -128,6 +129,8 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 		if (!chunkDirty && pending === 0) return;
 		chunkDirty = false;
 		far = view.k > (far ? 1.6 : 2);
+		const coarseK = world.coarseK ?? Infinity;
+		coarse = view.k > (coarse ? coarseK * 0.88 : coarseK);
 		tick++;
 		let minX = Infinity;
 		let maxX = -Infinity;
@@ -161,7 +164,7 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 				const entry = chunks.get(`${cx},${cz}`);
 				if (entry) entry.seen = tick;
 				// a chunk of the other detail level stays on screen until its replacement is built
-				if (!entry || entry.far !== far) missing.push([cx, cz, Math.hypot((cx + 0.5) * CH - midX, (cz + 0.5) * CH - midZ)]);
+				if (!entry || entry.far !== far || entry.coarse !== coarse) missing.push([cx, cz, Math.hypot((cx + 0.5) * CH - midX, (cz + 0.5) * CH - midZ)]);
 			}
 		}
 		missing.sort((a, b) => a[2] - b[2]);
@@ -172,14 +175,14 @@ export async function start(canvas: HTMLCanvasElement, options: { night?: boolea
 			const key = `${cx},${cz}`;
 			const old = chunks.get(key);
 			if (old) dropChunk(old);
-			const chunk = buildChunk(cx, cz, far);
+			const chunk = buildChunk(cx, cz, far, coarse);
 			chunk.main.userData.chunk = true;
 			scene.add(chunk.main);
 			if (chunk.lights) {
 				chunk.lights.visible = night > 0.5;
 				scene.add(chunk.lights);
 			}
-			chunks.set(key, { chunk, seen: tick, far });
+			chunks.set(key, { chunk, seen: tick, far, coarse });
 			built++;
 		}
 		pending = missing.length - built;
