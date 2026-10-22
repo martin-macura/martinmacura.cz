@@ -50,6 +50,7 @@ Q = {
     "green": lambda b: f'[out:json][timeout:250];(way["leisure"~"^(park|garden|pitch|golf_course|recreation_ground)$"]{b};relation["leisure"~"^(park|garden)$"]{b};way["landuse"~"^(forest|grass|meadow|recreation_ground|cemetery|allotments|village_green|vineyard|orchard)$"]{b};relation["landuse"~"^(forest|grass|meadow|cemetery)$"]{b};way["natural"~"^(wood|scrub|grassland)$"]{b};relation["natural"="wood"]{b};);out geom;',
     "rail": lambda b: f'[out:json][timeout:250];(way["railway"~"^(rail|light_rail|subway|tram)$"]{b};node["railway"~"^(station|halt|level_crossing)$"]{b};);out geom;',
     "subway": lambda b: f'[out:json][timeout:250];way["railway"="subway"]{b};out geom;',
+    "railtunnels": lambda b: f'[out:json][timeout:250];way["railway"~"^(rail|light_rail|subway)$"]["tunnel"="yes"]{b};out geom;',
     "buildings": lambda b: f'[out:json][timeout:250];(way["building"]{b};relation["building"]{b};);out geom;',
 }
 
@@ -71,6 +72,7 @@ if FULL:
         tiled(layer, 5, 4)
     tiled("buildings", 10, 8)
     overpass("subway", Q["subway"](bbox(S, N, W, E)))  # the metro, for the stretches of it out in the open
+    overpass("railtunnels", Q["railtunnels"](bbox(S, N, W, E)))  # the tunnels of the railway: the hill stays over them
 else:
     for layer in ("water", "highways", "green", "rail"):
         overpass(layer, Q[layer](bbox(S, N, W, E)))
@@ -120,6 +122,18 @@ for entry in open(feed, encoding="utf-8").read().split("<entry>")[1:]:
         with open(path, "wb") as f:
             f.write(data)
         print("terrain sheet", sheet, flush=True)
+
+# the storeys and the roofs of the houses: Podlažnosti of IPR Praha (CC BY 4.0, data base © IPR Praha), about 150 MB
+ipr = os.path.join(CACHE, "ipr", "podlaznosti.geojson")
+if not os.path.exists(ipr):
+    os.makedirs(os.path.dirname(ipr), exist_ok=True)
+    url = "https://opendata.geoportalpraha.cz/api/download/v1/items/669fb3aca4bf4129b252eac8552f6054/geojson?layers=0"
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=900) as r:
+        data = r.read()
+    with open(ipr, "wb") as f:
+        f.write(data)
+    print("storeys of IPR Praha", flush=True)
 
 # the timetable of the trams: the whole PID feed, about 50 MB, of which the trams are a small part
 gtfs = os.path.join(CACHE, "gtfs")
