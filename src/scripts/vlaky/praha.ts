@@ -27,13 +27,13 @@ const LEAVES = [0x2f8f4a, 0x3fae5c, 0x4fbf6a];
 const EARTH = [0xb7aa8c, 0xaea283];
 const CHARLES_LEN = Math.hypot(CHARLES.to[0] - CHARLES.from[0], CHARLES.to[1] - CHARLES.from[1]);
 
-/** within 6 units of Charles Bridge, which is stone */
-const nearCharles = (x: number, z: number) => {
+/** within `r` units (6 by default) of Charles Bridge, which is stone */
+const nearCharles = (x: number, z: number, r = 6) => {
 	const [x1, z1] = CHARLES.from;
 	const dx = CHARLES.to[0] - x1;
 	const dz = CHARLES.to[1] - z1;
 	const t = Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / (dx * dx + dz * dz)));
-	return Math.hypot(x1 + dx * t - x, z1 + dz * t - z) < 6;
+	return Math.hypot(x1 + dx * t - x, z1 + dz * t - z) < r;
 };
 
 /** how tall the walls of a house stand, in units, from its height in metres and its kind */
@@ -574,8 +574,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		};
 		const all: Extras[] = [];
 		if (roads) {
-			// the streets into the crossing in Vysočany are closed: the police are there
-			const open = (x: number, z: number) => (x - ACCIDENT.x) ** 2 + (z - ACCIDENT.z) ** 2 > ACCIDENT.r ** 2;
+			// the streets into the crossing in Vysočany are closed: the police are there; and Charles Bridge is for walking
+			const open = (x: number, z: number) => (x - ACCIDENT.x) ** 2 + (z - ACCIDENT.z) ** 2 > ACCIDENT.r ** 2 && !nearCharles(x, z, 2);
 			all.push(createTraffic(scene, roads, groundAt, (x, z) => open(x, z) && (isWater(x, z) || roadOK(x, z))));
 			all.push(createAccident(scene, roads, groundAt));
 			all.push(createYard(scene, groundAt));
