@@ -3,10 +3,12 @@
 // it comes back somewhere in it, so a few hundred cars are enough for the whole city.
 import { Color, InstancedMesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
 import type { RoadNet } from "./praha-roads";
+import { BODIES, SIEGL, TRUCK_LAMPS, truckParts } from "./praha-siegl";
 import { COLORS, glow, rng, unit } from "./util";
 import { type Focus, VEHICLES_UP_TO } from "./world";
 
 const MAX = 420;
+const TRUCKS = 8; // the trucks of Siegl, around their yard
 const SPEED = [0, 1.3, 2, 3]; // units a second, by class
 const KEEP_RIGHT = [0, 0.24, 0.42, 0.62];
 /** how many cars a stretch of street carries by class, against the busiest: the side streets are quiet, the avenues are not */
@@ -80,6 +82,8 @@ interface Car {
 	s: number; // distance driven along the edge
 	v: number;
 	vmax: number;
+	/** a truck of Siegl: the kind of its body, an index into BODIES; absent for a car */
+	truck?: number;
 }
 
 export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
@@ -156,6 +160,8 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		place(car.e, car.dir, len[car.e]);
 		const hx = at.dx;
 		const hz = at.dz;
+		// a truck of Siegl that has gone far from its yard takes the turns that lead back
+		const homeward = car.truck !== undefined && Math.hypot(net.nx[node] - SIEGL.x, net.nz[node] - SIEGL.z) > SIEGL.home;
 		let best = -1;
 		let bestScore = -Infinity;
 		for (let k = outCount[node]; k < outCount[node + 1]; k++) {
@@ -165,7 +171,11 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			if (e === car.e && dir === -car.dir) continue;
 			place(e, dir, Math.min(0.5, len[e]));
 			const straight = hx * at.dx + hz * at.dz; // 1 straight on, -1 back
-			const score = straight + rand() * 1.6 + PULL[net.cls[e]];
+			let score = straight + rand() * 1.6 + PULL[net.cls[e]];
+			if (homeward) {
+				const end = dir > 0 ? net.eb[e] : net.ea[e];
+				score += ((Math.hypot(net.nx[node] - SIEGL.x, net.nz[node] - SIEGL.z) - Math.hypot(net.nx[end] - SIEGL.x, net.nz[end] - SIEGL.z)) / Math.max(1, len[e])) * 4;
+			}
 			if (score > bestScore) {
 				bestScore = score;
 				best = k;
@@ -187,6 +197,27 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 
 	const cars: Car[] = Array.from({ length: MAX }, () => ({ e: -1, dir: 1, s: 0, v: 0, vmax: 1 }));
 	const colors = cars.map((_, i) => CAR_COLORS[i % CAR_COLORS.length]);
+	const trucks: Car[] = Array.from({ length: TRUCKS }, (_, i) => ({ e: -1, dir: 1, s: 0, v: 0, vmax: 1, truck: i % BODIES.length }));
+	const everyone = [...cars, ...trucks];
+	// the streets that touch the neighbourhood of the yard: where a truck starts
+	const siteEdges: number[] = [];
+	for (let e = 0; e < ne; e++) {
+		for (let i = net.start[e]; i < net.start[e + 1]; i++) {
+			if (Math.hypot(net.px[i] - SIEGL.x, net.pz[i] - SIEGL.z) < SIEGL.home * 0.6) {
+				if (ok(e)) siteEdges.push(e);
+				break;
+			}
+		}
+	}
+	function spawnTruck(car: Car) {
+		if (!siteEdges.length) return;
+		const e = siteEdges[Math.floor(rand() * siteEdges.length)];
+		car.e = e;
+		car.dir = net.oneway[e] || rand() < 0.5 ? 1 : -1;
+		car.s = rand() * len[e];
+		car.vmax = SPEED[net.cls[e]] * (0.7 + rand() * 0.3);
+		car.v = car.vmax * 0.6;
+	}
 
 	/** puts the car on a random street of a random chunk in the view */
 	function spawn(car: Car, f: Focus) {
@@ -228,6 +259,15 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 
 	const lamps = createLamps(scene, MAX);
 
+	// the trucks of Siegl: every part of one is a box of an instanced mesh with its colour
+	const kinds = BODIES.map((b) => truckParts(b).map((p) => ({ part: p, color: new Color(p[6]) })));
+	const truckMesh = new InstancedMesh(unit, new MeshLambertMaterial({ color: 0xffffff }), TRUCKS * Math.max(...kinds.map((k) => k.length)));
+	truckMesh.frustumCulled = false;
+	truckMesh.userData.dynamic = true;
+	truckMesh.count = 0;
+	scene.add(truckMesh);
+	const truckLamps = createLamps(scene, TRUCKS);
+
 	// cars in the same lane of the same edge, to keep the gaps
 	const lanes = new Map<number, Car[]>();
 	let shown = false;
@@ -250,8 +290,18 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			place(car.e, car.dir, car.s);
 			if (Math.abs(at.x - f.x) > f.r * 1.25 || Math.abs(at.z - f.z) > f.r * 1.25) spawn(car, f);
 		}
+		// the trucks of Siegl are there while the yard is in the view or near it
+		const yard = Math.abs(f.x - SIEGL.x) < f.r * 1.25 + SIEGL.home * 0.5 && Math.abs(f.z - SIEGL.z) < f.r * 1.25 + SIEGL.home * 0.5;
+		for (const car of trucks) {
+			if (!yard) car.e = -1;
+			else if (car.e < 0) spawnTruck(car);
+			else {
+				place(car.e, car.dir, car.s);
+				if (Math.hypot(at.x - SIEGL.x, at.z - SIEGL.z) > SIEGL.home * 1.8) spawnTruck(car);
+			}
+		}
 		lanes.clear();
-		for (const car of cars) {
+		for (const car of everyone) {
 			if (car.e < 0) continue;
 			const key = car.e * 2 + (car.dir > 0 ? 0 : 1);
 			const list = lanes.get(key);
@@ -265,7 +315,9 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 				let limit = car.vmax;
 				if (i > 0) {
 					const gap = list[i - 1].s - car.s;
-					limit = Math.min(limit, Math.max(0, (gap - 1.3) * 1.5));
+					// a truck is longer than a car: more room in front of it, and more behind it
+					const need = 1.3 + (list[i - 1].truck !== undefined ? 0.6 : 0) + (car.truck !== undefined ? 0.4 : 0);
+					limit = Math.min(limit, Math.max(0, (gap - need) * 1.5));
 				}
 				car.v = car.v < limit ? Math.min(limit, car.v + 1.4 * dt) : Math.max(limit, car.v - 4 * dt);
 				car.s += car.v * dt;
@@ -283,10 +335,12 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 
 	const dummy = new Object3D();
 	function pose() {
-		bodies.visible = cabins.visible = shown;
+		bodies.visible = cabins.visible = truckMesh.visible = shown;
 		const lit = lamps.begin();
+		const trucksLit = truckLamps.begin();
 		if (!shown) {
 			lamps.end();
+			truckLamps.end();
 			return;
 		}
 		let n = 0;
@@ -312,6 +366,32 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			if (lit) lamps.put(x, y + 0.2, z, at.dx, at.dz, 0.48, 0.15);
 			n++;
 		}
+		let t = 0;
+		for (const car of trucks) {
+			if (car.e < 0) continue;
+			place(car.e, car.dir, car.s);
+			const off = net.oneway[car.e] && net.cls[car.e] < 3 ? 0 : KEEP_RIGHT[net.cls[car.e]];
+			const x = at.x - at.dz * off;
+			const z = at.z + at.dx * off;
+			const y = groundAt(x, z);
+			for (const { part, color } of kinds[car.truck!]) {
+				dummy.position.set(x, y, z);
+				dummy.rotation.set(0, Math.atan2(at.dx, at.dz), 0);
+				dummy.translateX(part[0]);
+				dummy.translateY(part[1]);
+				dummy.translateZ(part[2]);
+				dummy.scale.set(part[3], part[4], part[5]);
+				dummy.updateMatrix();
+				truckMesh.setMatrixAt(t, dummy.matrix);
+				truckMesh.setColorAt(t, color);
+				t++;
+			}
+			if (trucksLit) truckLamps.put(x, y + 0.3, z, at.dx, at.dz, TRUCK_LAMPS.half, TRUCK_LAMPS.wide);
+		}
+		truckMesh.count = t;
+		truckMesh.instanceMatrix.needsUpdate = true;
+		if (truckMesh.instanceColor) truckMesh.instanceColor.needsUpdate = true;
+		truckLamps.end();
 		lamps.end();
 		bodies.count = cabins.count = n;
 		bodies.instanceMatrix.needsUpdate = true;
@@ -319,5 +399,5 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
 	}
 
-	return { simulate, pose, cars };
+	return { simulate, pose, cars, trucks };
 }
