@@ -1,8 +1,9 @@
-// The bridges of Prague over the water: every street the map calls a bridge, where it touches water, is a deck of its
-// own instead of a strip of the raster. The deck starts at the height of the street at each bank and rises towards
-// the middle of the river; it is a thick girder with a pavement and a parapet at each side, lamps, piers in the water
-// and a shadow on it. The cars, the trams and the buses ride on it (deckAt), the trams' rails are laid on it
-// (lineBoxes) and the Charles Bridge puts its towers and statues on it (frame).
+// The bridges of Prague: every street the map calls a bridge, where it touches water, is a deck of its own instead of a
+// strip of the raster. The deck starts at the height of the street at each bank and rises towards the middle of the
+// river; it is a thick girder with a pavement and a parapet at each side, lamps, piers in the water and a shadow on it.
+// The cars, the trams and the buses ride on it (deckAt), the trams' rails are laid on it (lineBoxes) and the Charles
+// Bridge puts its towers and statues on it (frame). A bridge over land (a viaduct, Nuselský most) is the same deck on
+// piers, straight between its ends, where the land falls away under it; only the cars drive on that one.
 import { COLOR, inChunk, type RoadNet, WIDTH } from "./praha-roads";
 import { COLORS, hash2 } from "./util";
 
@@ -20,6 +21,7 @@ const SHADOW = 0x1f55d6; // the deck on the water, where the sun of the scene th
 const QUANT = 0.025; // heights come in these steps, so that a flat deck is one box and a slope still makes runs
 const CELL = 4; // the grid of the lookup of a point
 const COVER = 1.6; // the raster leaves out its strip this far beyond the deck
+const VIADUCT = 1.0; // a bridge over land is a deck only where the land is at least this far under it somewhere
 
 /** stone, steel, concrete: a light girder, so that it shows against the dark road and the water */
 const STYLES = [
@@ -45,6 +47,7 @@ interface Span {
 	half: number; // half the width of the deck
 	cls: number;
 	style: number;
+	dry: boolean; // a viaduct over land, not a bridge over water
 	piers: Pier[];
 	/** between two piers: the arch under the girder, as steps */
 	arches: { ax: number; az: number; bx: number; bz: number; ry: number; top: number; base: number }[];
@@ -52,9 +55,9 @@ interface Span {
 }
 
 export interface Bridges {
-	/** the height of the roadway of a bridge at (x, z), NaN where none stands */
-	deckAt(x: number, z: number): number;
-	/** whether (x, z) lies on or close beside a deck, where the raster must not draw its own strip of bridge */
+	/** the height of the roadway of a bridge over water at (x, z), NaN where none stands; `viaducts` takes the ones over land too (only a car knows that it is on one, not under it) */
+	deckAt(x: number, z: number, viaducts?: boolean): number;
+	/** whether (x, z) lies on or close beside a deck over water, where the raster must not draw its own strip of bridge */
 	covers(x: number, z: number): boolean;
 	/** where the deck nearest to (x, z) is, if one is within a few units: the point on its middle line, its heading and its height */
 	frame(x: number, z: number): { x: number; z: number; ux: number; uz: number; h: number } | null;
@@ -64,7 +67,7 @@ export interface Bridges {
 
 /**
  * `ground` is the height of the street on the land, `stone` marks where a bridge is of stone (Charles Bridge). Bridges are the streets flagged as bridges that touch water,
- * together with the flagged streets joined to them.
+ * together with the flagged streets joined to them; the flagged streets that touch no water are viaducts where the land falls away under them.
  */
 export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boolean, ground: (x: number, z: number) => number, stone: (x: number, z: number) => boolean): Bridges {
 	const ne = net.ea.length;
@@ -95,7 +98,7 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 		return { x: xs, z: zs, s: ss };
 	};
 
-	// the streets flagged as bridges, in groups that touch at a junction; a group that touches water is a bridge
+	// the streets flagged as bridges, in groups that touch at a junction; a group that touches water is a bridge over it, any other a viaduct if the land falls away
 	const parent = Int32Array.from({ length: nn }, (_, i) => i);
 	const find = (a: number): number => {
 		while (parent[a] !== a) a = parent[a] = parent[parent[a]];
@@ -112,7 +115,6 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 	const groups = new Map<number, number[]>(); // the group (by its root node) -> its edges
 	for (const e of cand.keys()) {
 		const r = find(net.ea[e]);
-		if (!wetRoot.has(r)) continue;
 		const list = groups.get(r);
 		if (list) list.push(e);
 		else groups.set(r, [e]);
@@ -131,8 +133,16 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 		}
 	}
 
+	/** the height of the land at the end of a viaduct: the mean round it, so that the two roadways side by side start at one height */
+	const bankAt = (x: number, z: number) => {
+		let sum = 0;
+		for (const dz of [-2, 0, 2]) for (const dx of [-2, 0, 2]) sum += ground(x + dx, z + dz);
+		return sum / 9;
+	};
+
 	const spans: Span[] = [];
 	for (const [root, edges] of groups) {
+		const dry = !wetRoot.has(root);
 		// the nodes of the group and the lengths between them
 		const local = new Map<number, number>();
 		const nodes: number[] = [];
@@ -173,9 +183,12 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 			}
 			return d;
 		});
-		const bank = sources.map(([v]) => ground(net.nx[v], net.nz[v]));
-		const style = edges.some((e) => cand.get(e)!.x.some((x, k) => stone(x, cand.get(e)!.z[k]))) ? 0 : hash2(root, 3) % 3;
+		const bank = sources.map(([v]) => (dry ? bankAt(net.nx[v], net.nz[v]) : ground(net.nx[v], net.nz[v])));
+		const style = dry ? 2 : edges.some((e) => cand.get(e)!.x.some((x, k) => stone(x, cand.get(e)!.z[k]))) ? 0 : hash2(root, 3) % 3;
 
+		// the height of the roadway at every sample; a viaduct is straight between its ends
+		const heights = new Map<number, Float32Array>();
+		let over = 0; // how far over the land the deck is, at most
 		for (const e of edges) {
 			const sm = cand.get(e)!;
 			const n = sm.x.length;
@@ -199,10 +212,20 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 				}
 				const base = Number.isNaN(pinned) ? (den ? num / den : 0) : pinned;
 				const u = Math.min(1, dmin / RAMP);
-				let d = base + HUMP * u * u * (3 - 2 * u);
+				let d = base + (dry ? 0 : HUMP) * u * u * (3 - 2 * u);
 				d = isWater(sm.x[k], sm.z[k]) ? Math.max(d, 0.12) : Math.max(d, ground(sm.x[k], sm.z[k]));
 				h[k] = Math.round(d / QUANT) * QUANT;
+				if (dry) over = Math.max(over, h[k] - ground(sm.x[k], sm.z[k]));
 			}
+			heights.set(e, h);
+		}
+		if (dry && over < VIADUCT) continue;
+
+		for (const e of edges) {
+			const sm = cand.get(e)!;
+			const n = sm.x.length;
+			const total = sm.s[n - 1];
+			const h = heights.get(e)!;
 			const cls = net.cls[e];
 			const span: Span = {
 				n,
@@ -213,6 +236,7 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 				half: WIDTH[cls] / 2 + SIDE,
 				cls,
 				style: cls === 3 ? 2 : style,
+				dry,
 				piers: [],
 				arches: [],
 				lamps: [],
@@ -310,7 +334,7 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 
 	/** the nearest segment within `extra` beyond the half width of its deck: its height there, or NaN; `found` says which */
 	const found = { span: -1, k: 0, t: 0 };
-	function look(x: number, z: number, extra: number) {
+	function look(x: number, z: number, extra: number, viaducts = false) {
 		const list = grid.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL));
 		found.span = -1;
 		if (!list) return NaN;
@@ -319,6 +343,7 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 		for (const id of list) {
 			const { span, k } = segs[id];
 			const sp = spans[span];
+			if (sp.dry && !viaducts) continue;
 			const ax = sp.x[k];
 			const az = sp.z[k];
 			const dx = sp.x[k + 1] - ax;
@@ -449,7 +474,7 @@ export function makeBridges(net: RoadNet, isWater: (x: number, z: number) => boo
 	}
 
 	return {
-		deckAt: (x, z) => look(x, z, 0.1),
+		deckAt: (x, z, viaducts = false) => look(x, z, 0.1, viaducts),
 		covers: (x, z) => !Number.isNaN(look(x, z, COVER)),
 		frame(x, z) {
 			if (Number.isNaN(look(x, z, 3))) return null;

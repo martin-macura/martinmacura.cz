@@ -522,10 +522,10 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	function createExtras(scene: Scene, railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): Extras {
 		const columnH = columns(railDist);
 		const bridges = bridgesOf(columnH);
-		// on the road, or on the deck of a bridge over the water
-		// (a car on a street under a bridge says so, and stays on the ground)
-		const groundAt = (x: number, z: number, onBridge = true) => {
-			const deck = bridges && onBridge ? bridges.deckAt(x, z) : NaN;
+		// on the road, or on the deck of a bridge over the water; a car says whether it is on a bridge, one on a street
+		// under a bridge stays on the ground, and only a car rides on a viaduct (the trams and the buses leave `onBridge` out)
+		const groundAt = (x: number, z: number, onBridge?: boolean) => {
+			const deck = bridges && onBridge !== false ? bridges.deckAt(x, z, onBridge === true) : NaN;
 			if (!Number.isNaN(deck)) return deck + 0.07;
 			return isWater(x, z) ? 0.4 : columnH(x, z) + 0.07;
 		};
