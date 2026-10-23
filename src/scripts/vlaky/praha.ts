@@ -5,9 +5,10 @@
 // yard in Kyje (praha-siegl.ts).
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: DMR 4G (c) ČÚZK. Timetables: PID (CC BY 4.0).
 import type { Scene } from "three";
-import { CHARLES, LANDMARKS } from "./praha-landmarks";
+import { CHARLES, LANDMARKS, project } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
+import { createRapper, RAPPER } from "./praha-rapper";
 import { createYard } from "./praha-siegl";
 import { createTraffic } from "./praha-traffic";
 import { BUS, createTrams, lineBoxes, METRO, nearTrack, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
@@ -24,6 +25,15 @@ const ROOFS = [0xb5482f, 0xa03e2a, 0xc4623a, 0xb5482f, 0xa03e2a, 0xc4623a, 0xb54
 const LEAVES = [0x2f8f4a, 0x3fae5c, 0x4fbf6a];
 const EARTH = [0xb7aa8c, 0xaea283];
 const CHARLES_LEN = Math.hypot(CHARLES.to[0] - CHARLES.from[0], CHARLES.to[1] - CHARLES.from[1]);
+
+/** how tall the walls of a house stand, in units, from its height in metres and its kind */
+const wallHeight = (metres: number, kind: number) => {
+	const h = clamp(metres / 5.2, 1, 11);
+	return kind & 1 ? Math.max(h, 2.6) : h;
+};
+/** a flat roof is a slab; a pitched one has three steps of this height (a bigger house rises more) */
+const roofRise = (depth: number) => (depth > 3 ? 0.4 : 0.3);
+const FLAT_SLAB = 0.14;
 
 const shade = (color: number, f: number) => (Math.round(((color >> 16) & 255) * f) << 16) | (Math.round(((color >> 8) & 255) * f) << 8) | Math.round((color & 255) * f);
 
@@ -456,6 +466,37 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		};
 	}
 
+	/** the house nearest to (x, z), if one stands within `reach` of it: where its roof tops out as the chunks build it, and the turn of its long side */
+	function roofAt(x: number, z: number, reach: number, groundH: (x: number, z: number) => number) {
+		let best = -1;
+		let bestDist = reach * reach;
+		for (let dx = -1; dx <= 1; dx++) {
+			for (let dz = -1; dz <= 1; dz++) {
+				for (const i of data.byChunk.get((Math.floor(x / CH) + dx) * 1000 + Math.floor(z / CH) + dz) ?? []) {
+					const dist = (data.houses[i * 7] / 4 - x) ** 2 + (data.houses[i * 7 + 1] / 4 - z) ** 2;
+					if (dist < bestDist) {
+						bestDist = dist;
+						best = i;
+					}
+				}
+			}
+		}
+		if (best < 0) return null;
+		const o = best * 7;
+		const hx = data.houses[o] / 4;
+		const hz = data.houses[o + 1] / 4;
+		const w = Math.max(0.9, data.houses[o + 2] / 8);
+		const d = Math.max(0.9, data.houses[o + 3] / 8);
+		const ang = (data.houses[o + 4] / 256) * Math.PI;
+		const ca = Math.cos(ang);
+		const sa = Math.sin(ang);
+		let gmax = 0;
+		for (const [lx, lz] of [[0, 0], [w / 2, d / 2], [-w / 2, d / 2], [w / 2, -d / 2], [-w / 2, -d / 2]]) gmax = Math.max(gmax, groundH(hx + lx * ca - lz * sa, hz + lx * sa + lz * ca));
+		const h = wallHeight(data.houses[o + 5], data.houses[o + 6]);
+		const flat = data.houses[o + 6] & 2 || h > 7.5;
+		return { x: hx, z: hz, ang, top: gmax + h + (flat ? FLAT_SLAB : roofRise(d) * 3) };
+	}
+
 	/** Charles Bridge: a stone deck on piers with a parapet, statues and the three towers */
 	function charlesBridge(add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void, lamp: typeof add) {
 		const [x1, z1] = CHARLES.from;
@@ -506,6 +547,13 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			all.push(createTraffic(scene, roads, groundAt, (x, z) => open(x, z) && (isWater(x, z) || roadOK(x, z))));
 			all.push(createAccident(scene, roads, groundAt));
 			all.push(createYard(scene, groundAt));
+		}
+		// the rapper stands on the ridge of Saratovská 17, looking out of the front of the house, where its address point is
+		const [rx, rz] = project(RAPPER.lat, RAPPER.lon);
+		const home = roofAt(rx, rz, 3, columnH);
+		if (home) {
+			const side = Math.cos(home.ang - Math.PI / 2) * (rx - home.x) + Math.sin(home.ang - Math.PI / 2) * (rz - home.z) > 0 ? -1 : 1;
+			all.push(createRapper(scene, { x: home.x, z: home.z, y: home.top, facing: home.ang + (side * Math.PI) / 2 }));
 		}
 		if (trams) all.push(createTrams(scene, trams, TRAM, groundAt));
 		if (buses) all.push(createTrams(scene, buses, BUS, groundAt));
