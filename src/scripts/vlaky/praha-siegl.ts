@@ -1,9 +1,11 @@
 // SIEGL s.r.o. (containers and the hauling of waste), Teplárenská 1620, Praha-Kyje: its white and red trucks drive
 // the streets around the yard. The livery from their photos: a white cab, a red visor over the windscreen with an
 // amber beacon on it, a red bumper and a red apron under the door, two red bars on the black chassis, and on the back
-// a hooklift with a dark green container.
+// a hooklift with a dark green container. Four of them live in the yard: they leave it down the access road, drive
+// the streets, and some come back and park (praha-traffic.ts).
 import type { Scene } from "three";
 import { project } from "./praha-landmarks";
+import { walkSegment } from "./praha-roads";
 import { type Box, COLORS, glow, lightMaterial, meshFromBoxes } from "./util";
 import type { Extras, Focus, Place } from "./world";
 
@@ -87,24 +89,73 @@ const V: [number, number] = [-U[1], U[0]];
 
 export const YARD = { x: YX, z: YZ };
 
-/** the parts of a truck as boxes of the world, turned `heading` (the direction it faces is (sin, cos)) at (x, z) */
-function truckBoxes(body: (typeof BODIES)[number], x: number, y: number, z: number, heading: number): Box[] {
-	const c = Math.cos(heading);
-	const s = Math.sin(heading);
-	return truckParts(body).map(([px, py, pz, w, h, l, color]) => [w, h, l, color, x + px * c + pz * s, y + py, z - px * s + pz * c, heading]);
+/** the point (u, v) of the yard in the world */
+const at = (u: number, v: number): [number, number] => [YX + U[0] * u + V[0] * v, YZ + U[1] * u + V[1] * v];
+
+// --- the access road and the trucks that live in the yard. Four of the trucks stand in the yard, nose to the road; they
+// pull out, drive down the road to Teplárenská and into the traffic, and some come back later and park again.
+
+/** how many of the trucks belong to the yard (the others drive the streets round it and never come in) */
+export const YARD_TRUCKS = 4;
+/** the kinds of their bodies, as indices into BODIES: a container, a skip, a bare hook, a container */
+export const YARD_BODIES = [0, 3, 4, 1];
+
+/** the access road from the yard down to Teplárenská (OSM way 23428513): the street lines of the map leave it out */
+const ROAD: [number, number][] = [
+	[1434.8, 10.2],
+	[1434.2, 12.1],
+	[1435.8, 23.2],
+	[1436.7, 27.3],
+	[1439.3, 38.5],
+	[1441.4, 49.0],
+	[1442.2, 50.9],
+	[1445.2, 53.1],
+	[1447.5, 54.7],
+	[SIEGL.x, SIEGL.z],
+];
+
+/** a point of Teplárenská upstream of the access road (the street runs west): the trucks that come back join it here */
+export const COME_FROM = { x: 1500, z: 65.5 };
+
+/** a truck in a slot stands nose to the road (east of the yard): this is the way it faces, as an angle from +z */
+export const SLOT_HEADING = Math.atan2(-V[0], -V[1]);
+
+/** the parts of the way out of every slot: from the slot, onto the access road, and down it to Teplárenská */
+export const EXIT_PATHS: [number, number][][] = Array.from({ length: YARD_TRUCKS }, (_, k) => {
+	const u = k * 1.4;
+	const slot = at(u, 1.45);
+	const turn = at(u + 0.1, -0.4);
+	const onRoad = at(u + 0.9, -0.95);
+	// the nearest point of the road to where the truck meets it, and the road from there on
+	let best = { i: 0, t: 0, d: Infinity };
+	for (let i = 0; i < ROAD.length - 1; i++) {
+		const [x1, z1] = ROAD[i];
+		const [x2, z2] = ROAD[i + 1];
+		const l2 = (x2 - x1) ** 2 + (z2 - z1) ** 2;
+		const t = Math.max(0, Math.min(1, ((onRoad[0] - x1) * (x2 - x1) + (onRoad[1] - z1) * (z2 - z1)) / l2));
+		const d = Math.hypot(x1 + (x2 - x1) * t - onRoad[0], z1 + (z2 - z1) * t - onRoad[1]);
+		if (d < best.d) best = { i, t, d };
+	}
+	const [x1, z1] = ROAD[best.i];
+	const [x2, z2] = ROAD[best.i + 1];
+	return [slot, turn, [x1 + (x2 - x1) * best.t, z1 + (z2 - z1) * best.t], ...ROAD.slice(best.i + 1)];
+});
+
+/** the access road as a strip along the ground, for chunk (cx, cz) */
+export function sieglRoad(cx: number, cz: number, ground: (x: number, z: number) => number, add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void) {
+	for (let i = 0; i < ROAD.length - 1; i++) {
+		const [x1, z1] = ROAD[i];
+		const [x2, z2] = ROAD[i + 1];
+		walkSegment(x1, z1, x2, z2, cx, cz, ground, () => false, (x, z, l, h, ry) => add(l + 0.3, 0.05, 0.7, 0x4a4a48, x, h + 0.035, z, ry));
+	}
 }
 
 export function createYard(scene: Scene, groundAt: (x: number, z: number) => number): Extras {
 	const y = groundAt(YX, YZ) - 0.07;
-	const at = (u: number, v: number): [number, number] => [YX + U[0] * u + V[0] * v, YZ + U[1] * u + V[1] * v];
 	const heading = Math.atan2(U[0], U[1]); // facing along u, towards the street
 	const boxes: Box[] = [];
 	const lamps: Box[] = [];
-	// three trucks, nose to the street, one with its skip, one bare
-	(["container", "skip", "bare"] as const).forEach((body, i) => {
-		const [x, z] = at(2 + (i % 2) * 1.2, 0.5 + i * 1.15);
-		boxes.push(...truckBoxes(body, x, y, z, heading));
-	});
+	// (the trucks that stand here are those of praha-traffic.ts: they drive out and come back)
 	// the containers in two rows, one of them stacked
 	const container = (u: number, v: number, level: number, color = GREEN) => {
 		const [x, z] = at(u, v);

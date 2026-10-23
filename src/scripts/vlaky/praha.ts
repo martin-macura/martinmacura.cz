@@ -9,7 +9,7 @@ import { CHARLES, LANDMARKS, project } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
 import { createRapper, RAPPER } from "./praha-rapper";
-import { createYard } from "./praha-siegl";
+import { createYard, sieglRoad } from "./praha-siegl";
 import { createTraffic } from "./praha-traffic";
 import { BUS, createTrams, lineBoxes, METRO, nearTrack, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
@@ -254,7 +254,10 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				}
 			}
 			// the streets as lines, where they are not on a bridge over the water or cut by the railway
-			if (lines) roadBoxes(roads, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
+			if (lines) {
+				roadBoxes(roads, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
+				sieglRoad(cx, cz, columnH, add);
+			}
 			// the tram rails and stops, up close
 			if (trams) lineBoxes(trams, TRAM, cx, cz, far, colH, isWater, (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too

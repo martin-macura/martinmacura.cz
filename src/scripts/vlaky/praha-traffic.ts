@@ -3,7 +3,7 @@
 // it comes back somewhere in it, so a few hundred cars are enough for the whole city.
 import { Color, InstancedMesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
 import type { RoadNet } from "./praha-roads";
-import { BODIES, SIEGL, TRUCK_LAMPS, truckParts } from "./praha-siegl";
+import { BODIES, COME_FROM, EXIT_PATHS, SIEGL, SLOT_HEADING, TRUCK_LAMPS, truckParts, YARD, YARD_BODIES, YARD_TRUCKS } from "./praha-siegl";
 import { COLORS, glow, rng, unit } from "./util";
 import { type Focus, VEHICLES_UP_TO } from "./world";
 
@@ -84,7 +84,36 @@ interface Car {
 	vmax: number;
 	/** a truck of Siegl: the kind of its body, an index into BODIES; absent for a car */
 	truck?: number;
+	/** a truck that lives in the yard of Siegl: where it is in its day; absent for the others */
+	duty?: Duty;
 }
+
+/** a truck of the yard stands in its slot, drives out, goes along the streets, is away for a while, comes back and drives in */
+interface Duty {
+	slot: number;
+	phase: "parked" | "out" | "road" | "away" | "in";
+	/** how far along the way out of its slot it is, while it drives out or in */
+	d: number;
+	/** seconds until it leaves its slot, or until it comes back */
+	wait: number;
+	/** on its way home: it turns in at the access road */
+	homing: boolean;
+	/** seconds it has stood still on a street */
+	stuck: number;
+	/** the way it faces, an angle from +z; on the way in and out it turns towards the way it goes */
+	heading: number;
+}
+
+/** how fast a truck drives on the access road, units a second */
+const YARD_SPEED = 1.6;
+
+/** `from` turned towards `to` by at most `max` radians */
+const turnTo = (from: number, to: number, max: number) => {
+	let diff = (to - from) % (Math.PI * 2);
+	if (diff > Math.PI) diff -= Math.PI * 2;
+	else if (diff < -Math.PI) diff += Math.PI * 2;
+	return from + Math.max(-max, Math.min(max, diff));
+};
 
 export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
 	const rand = rng(23);
@@ -161,7 +190,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		const hx = at.dx;
 		const hz = at.dz;
 		// a truck of Siegl that has gone far from its yard takes the turns that lead back
-		const homeward = car.truck !== undefined && Math.hypot(net.nx[node] - SIEGL.x, net.nz[node] - SIEGL.z) > SIEGL.home;
+		const homeward = car.truck !== undefined && (!car.duty || car.duty.homing) && Math.hypot(net.nx[node] - SIEGL.x, net.nz[node] - SIEGL.z) > SIEGL.home;
 		let best = -1;
 		let bestScore = -Infinity;
 		for (let k = outCount[node]; k < outCount[node + 1]; k++) {
@@ -172,6 +201,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			place(e, dir, Math.min(0.5, len[e]));
 			const straight = hx * at.dx + hz * at.dz; // 1 straight on, -1 back
 			let score = straight + rand() * 1.6 + PULL[net.cls[e]];
+			if (car.duty?.homing && e === join.e && dir === join.dir) score += 4; // home: the access road is here
 			if (homeward) {
 				const end = dir > 0 ? net.eb[e] : net.ea[e];
 				score += ((Math.hypot(net.nx[node] - SIEGL.x, net.nz[node] - SIEGL.z) - Math.hypot(net.nx[end] - SIEGL.x, net.nz[end] - SIEGL.z)) / Math.max(1, len[e])) * 4;
@@ -197,7 +227,10 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 
 	const cars: Car[] = Array.from({ length: MAX }, () => ({ e: -1, dir: 1, s: 0, v: 0, vmax: 1 }));
 	const colors = cars.map((_, i) => CAR_COLORS[i % CAR_COLORS.length]);
-	const trucks: Car[] = Array.from({ length: TRUCKS }, (_, i) => ({ e: -1, dir: 1, s: 0, v: 0, vmax: 1, truck: i % BODIES.length }));
+	const trucks: Car[] = Array.from({ length: TRUCKS }, (_, i): Car => {
+		if (i >= YARD_TRUCKS) return { e: -1, dir: 1, s: 0, v: 0, vmax: 1, truck: i % BODIES.length };
+		return { e: -1, dir: 1, s: 0, v: 0, vmax: 1, truck: YARD_BODIES[i], duty: { slot: i, phase: "parked", d: 0, wait: 1 + i * 3 + rand() * 4, homing: false, stuck: 0, heading: SLOT_HEADING } };
+	});
 	const everyone = [...cars, ...trucks];
 	// the streets that touch the neighbourhood of the yard: where a truck starts
 	const siteEdges: number[] = [];
@@ -218,6 +251,147 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		car.vmax = SPEED[net.cls[e]] * (0.7 + rand() * 0.3);
 		car.v = car.vmax * 0.6;
 	}
+
+	// --- the trucks that live in the yard: the way out of a slot is a path of the world, which is not a street of the
+	// map; on a street a truck is a car like the others
+	/** the street, the direction and the place on it that are nearest to a point of the world, among the streets that run west */
+	const locate = (px: number, pz: number) => {
+		let best = { e: -1, dir: 1 as 1 | -1, s: 0, d: Infinity };
+		for (let a = -1; a <= 1; a++) {
+			for (let b = -1; b <= 1; b++) {
+				for (const i of net.byChunk.get((Math.floor(px / CH) + a) * 1000 + Math.floor(pz / CH) + b) ?? []) {
+					const e = net.segEdge[i];
+					const dx = net.px[i + 1] - net.px[i];
+					const dz = net.pz[i + 1] - net.pz[i];
+					const l = Math.hypot(dx, dz) || 1;
+					const t = Math.min(l, Math.max(0, ((px - net.px[i]) * dx + (pz - net.pz[i]) * dz) / l));
+					const d = Math.hypot(net.px[i] + (dx / l) * t - px, net.pz[i] + (dz / l) * t - pz);
+					if (d >= best.d || !ok(e)) continue;
+					const dir = net.oneway[e] || dx < 0 ? 1 : -1; // with the street, or to the west
+					if ((dir * dx) / l > -0.6) continue; // Teplárenská runs west here: not a street that crosses it
+					const along = cum[i] + t;
+					best = { e, dir, s: dir > 0 ? along : len[e] - along, d };
+				}
+			}
+		}
+		return best;
+	};
+	const join = locate(SIEGL.x, SIEGL.z); // where the access road meets the street
+	const comeFrom = locate(COME_FROM.x, COME_FROM.z); // and where a truck that comes back joins the street
+	const fleetOK = join.d < 6 && comeFrom.d < 6 && !(comeFrom.e === join.e && comeFrom.dir === join.dir && comeFrom.s >= join.s);
+	const pathLen = EXIT_PATHS.map((path) => path.reduce((sum, q, i) => sum + (i ? Math.hypot(q[0] - path[i - 1][0], q[1] - path[i - 1][1]) : 0), 0));
+	/** the point at distance d along the way out of slot k, and the way it goes there */
+	const spot = { x: 0, z: 0, dx: 0, dz: 1 };
+	function onPath(k: number, d: number) {
+		const path = EXIT_PATHS[k];
+		let i = 0;
+		let left = Math.max(0, d);
+		while (i < path.length - 2 && left > Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])) {
+			left -= Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+			i++;
+		}
+		const l = Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]) || 1;
+		const f = Math.min(1, left / l);
+		spot.x = path[i][0] + (path[i + 1][0] - path[i][0]) * f;
+		spot.z = path[i][1] + (path[i + 1][1] - path[i][1]) * f;
+		spot.dx = (path[i + 1][0] - path[i][0]) / l;
+		spot.dz = (path[i + 1][1] - path[i][1]) / l;
+	}
+	/** no car is within a few units of the place on the street */
+	const room = (w: typeof join, except: Car) => everyone.every((c) => c === except || c.e !== w.e || c.dir !== w.dir || Math.abs(c.s - w.s) > 2.5);
+	/** another truck is on the access road near where the way out of slot k meets it */
+	const roadBusy = (k: number) =>
+		trucks.some((o) => {
+			const t = o.duty;
+			if (!t || t.slot === k || (t.phase !== "out" && t.phase !== "in")) return false;
+			onPath(t.slot, t.d);
+			return Math.hypot(spot.x - EXIT_PATHS[k][2][0], spot.z - EXIT_PATHS[k][2][1]) < 5;
+		});
+	function takeStreet(car: Car, t: Duty, where: typeof join, homing: boolean) {
+		car.e = where.e;
+		car.dir = where.dir;
+		car.s = where.s;
+		car.v = 0.3;
+		car.vmax = SPEED[net.cls[car.e]] * 0.85;
+		t.phase = "road";
+		t.homing = homing;
+		t.stuck = 0;
+	}
+	/** a day of a truck of the yard, one step; `near` says the yard is in the view or close to it */
+	function tend(car: Car, t: Duty, dt: number, near: boolean) {
+		if (!near) {
+			// out of sight it is back in its slot
+			if (t.phase !== "parked") {
+				t.phase = "parked";
+				t.wait = 1 + t.slot * 3 + rand() * 4;
+			}
+			car.e = -1;
+			t.heading = SLOT_HEADING;
+			return;
+		}
+		switch (t.phase) {
+			case "parked":
+				t.heading = SLOT_HEADING;
+				if ((t.wait -= dt) <= 0 && fleetOK && !roadBusy(t.slot)) {
+					t.phase = "out";
+					t.d = 0;
+				}
+				break;
+			case "out":
+				t.d += YARD_SPEED * dt;
+				onPath(t.slot, t.d);
+				t.heading = turnTo(t.heading, Math.atan2(spot.dx, spot.dz), 3 * dt);
+				if (t.d >= pathLen[t.slot]) {
+					if (room(join, car)) takeStreet(car, t, join, false);
+					else t.d = pathLen[t.slot];
+				}
+				break;
+			case "road": {
+				if (car.e < 0) {
+					// the street ended
+					t.phase = "away";
+					t.wait = 3 + rand() * 8;
+					break;
+				}
+				place(car.e, car.dir, car.s);
+				t.heading = turnTo(t.heading, Math.atan2(at.dx, at.dz), 3 * dt);
+				if (Math.hypot(at.x - SIEGL.x, at.z - SIEGL.z) > SIEGL.home * 1.8) {
+					// off on a job, out of sight
+					car.e = -1;
+					t.phase = "away";
+					t.wait = 4 + rand() * 10;
+				} else if (t.homing && car.e === join.e && car.dir === join.dir && car.s >= join.s) {
+					// at the access road: it turns in
+					car.e = -1;
+					t.phase = "in";
+					t.d = pathLen[t.slot];
+				} else {
+					// in a jam for good: it goes, and comes back later, rather than stand for ever
+					t.stuck = car.v < 0.05 ? t.stuck + dt : 0;
+					if (t.stuck > 20) {
+						car.e = -1;
+						t.phase = "away";
+						t.wait = 3 + rand() * 6;
+					}
+				}
+				break;
+			}
+			case "away":
+				if ((t.wait -= dt) <= 0 && room(comeFrom, car)) takeStreet(car, t, comeFrom, true);
+				break;
+			case "in":
+				t.d -= YARD_SPEED * dt;
+				onPath(t.slot, t.d);
+				// over the last stretch it swings round to stand as it will leave, nose to the road
+				t.heading = turnTo(t.heading, t.d > 1.6 ? Math.atan2(-spot.dx, -spot.dz) : SLOT_HEADING, 3 * dt);
+				if (t.d <= 0) {
+					t.phase = "parked";
+					t.wait = 12 + rand() * 25;
+				}
+				break;
+		}
+	}
+	let siteNear = false; // the yard is in the view or close to it
 
 	/** puts the car on a random street of a random chunk in the view */
 	function spawn(car: Car, f: Focus) {
@@ -291,9 +465,12 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			if (Math.abs(at.x - f.x) > f.r * 1.25 || Math.abs(at.z - f.z) > f.r * 1.25) spawn(car, f);
 		}
 		// the trucks of Siegl are there while the yard is in the view or near it
-		const yard = Math.abs(f.x - SIEGL.x) < f.r * 1.25 + SIEGL.home * 0.5 && Math.abs(f.z - SIEGL.z) < f.r * 1.25 + SIEGL.home * 0.5;
+		const nearSite = (px: number, pz: number) => Math.abs(f.x - px) < f.r * 1.25 + SIEGL.home * 0.5 && Math.abs(f.z - pz) < f.r * 1.25 + SIEGL.home * 0.5;
+		const yard = nearSite(SIEGL.x, SIEGL.z);
+		siteNear = yard || nearSite(YARD.x, YARD.z);
 		for (const car of trucks) {
-			if (!yard) car.e = -1;
+			if (car.duty) tend(car, car.duty, dt, siteNear);
+			else if (!yard) car.e = -1;
 			else if (car.e < 0) spawnTruck(car);
 			else {
 				place(car.e, car.dir, car.s);
@@ -368,15 +545,29 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 		}
 		let t = 0;
 		for (const car of trucks) {
-			if (car.e < 0) continue;
-			place(car.e, car.dir, car.s);
-			const off = net.oneway[car.e] && net.cls[car.e] < 3 ? 0 : KEEP_RIGHT[net.cls[car.e]];
-			const x = at.x - at.dz * off;
-			const z = at.z + at.dx * off;
+			const duty = car.duty;
+			let x: number;
+			let z: number;
+			let heading: number;
+			if (duty && duty.phase !== "road") {
+				// in the yard or on the access road, off the streets of the map
+				if (duty.phase === "away" || !siteNear) continue;
+				onPath(duty.slot, duty.phase === "parked" ? 0 : duty.d);
+				x = spot.x;
+				z = spot.z;
+				heading = duty.heading;
+			} else {
+				if (car.e < 0) continue;
+				place(car.e, car.dir, car.s);
+				const off = net.oneway[car.e] && net.cls[car.e] < 3 ? 0 : KEEP_RIGHT[net.cls[car.e]];
+				x = at.x - at.dz * off;
+				z = at.z + at.dx * off;
+				heading = duty ? duty.heading : Math.atan2(at.dx, at.dz);
+			}
 			const y = groundAt(x, z);
 			for (const { part, color } of kinds[car.truck!]) {
 				dummy.position.set(x, y, z);
-				dummy.rotation.set(0, Math.atan2(at.dx, at.dz), 0);
+				dummy.rotation.set(0, heading, 0);
 				dummy.translateX(part[0]);
 				dummy.translateY(part[1]);
 				dummy.translateZ(part[2]);
@@ -386,7 +577,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 				truckMesh.setColorAt(t, color);
 				t++;
 			}
-			if (trucksLit) truckLamps.put(x, y + 0.3, z, at.dx, at.dz, TRUCK_LAMPS.half, TRUCK_LAMPS.wide);
+			if (trucksLit && duty?.phase !== "parked") truckLamps.put(x, y + 0.3, z, Math.sin(heading), Math.cos(heading), TRUCK_LAMPS.half, TRUCK_LAMPS.wide);
 		}
 		truckMesh.count = t;
 		truckMesh.instanceMatrix.needsUpdate = true;
