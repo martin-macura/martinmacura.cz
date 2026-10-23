@@ -1,6 +1,7 @@
 // The sights of Prague, in boxes. Each one stands where it stands on the map (lat, lon) and pushes the ordinary
 // houses away from itself. A builder gets the ground height and places boxes in its own frame: x along the long
 // axis of the building, z across it, `rot` turning the whole thing.
+import { sieglYard, YARD } from "./praha-siegl";
 import { COLORS } from "./util";
 
 type Add = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void;
@@ -194,6 +195,17 @@ export const LANDMARKS: (Landmark & { rot: number })[] = [
 			add(1.4, 0.6, 1.4, 0x6f767f, 0, y + 23.4, 0);
 			add(0.22, 7, 0.22, 0xd9dde2, 0, y + 27, 0);
 			add(0.22, 1, 0.22, 0xff3b30, 0, y + 30.6, 0);
+		},
+	},
+	{
+		// SIEGL kontejnery, Teplárenská 1620 in Malešice: the yard (the lorries are in praha-traffic.ts)
+		name: "siegl",
+		x: YARD.x,
+		z: YARD.z,
+		rot: 0,
+		clear: 4,
+		build(add, glow, y) {
+			sieglYard(add, glow, y);
 		},
 	},
 	{

@@ -6,6 +6,7 @@
 import type { Scene } from "three";
 import { bridgeBoxes, cellDeckBoxes, findDecks } from "./praha-bridges";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
+import { sieglRoad } from "./praha-siegl";
 import { parseRoads, type RoadNet, roadBoxes, WIDTH } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
 import { createTraffic } from "./praha-traffic";
@@ -282,6 +283,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			if (lines) {
 				roadBoxes(roads, cx, cz, streetH, (x, z) => isWater(x, z) || !roadOK(x, z), add, columnH);
 				bridgeBoxes(roads, decks, cx, cz, add, lamp, isWater);
+				sieglRoad(cx, cz, streetH, add);
 			}
 			// the tram rails and stops, up close
 			// the tram runs on the deck of a bridge, which carries the street
