@@ -10,6 +10,8 @@ export interface RoadNet {
 	eb: Uint32Array;
 	cls: Uint8Array;
 	oneway: Uint8Array;
+	/** per edge: 1 when it is on a bridge or a viaduct (over water or over land) */
+	bridge: Uint8Array;
 	/** the points of edge e, ends included, are px/pz[start[e] .. start[e + 1]) */
 	start: Uint32Array;
 	px: Float32Array;
@@ -53,6 +55,7 @@ export function parseRoads(buf: ArrayBuffer): RoadNet {
 	const eb = new Uint32Array(ne);
 	const cls = new Uint8Array(ne);
 	const oneway = new Uint8Array(ne);
+	const bridge = new Uint8Array(ne);
 	const start = new Uint32Array(ne + 1);
 	const xs: number[] = [];
 	const zs: number[] = [];
@@ -66,6 +69,7 @@ export function parseRoads(buf: ArrayBuffer): RoadNet {
 		eb[e] = bb;
 		cls[e] = f & 3;
 		oneway[e] = (f >> 2) & 1;
+		bridge[e] = (f >> 3) & 1;
 		start[e] = xs.length;
 		let lx = nx[a] * 4;
 		let lz = nz[a] * 4;
@@ -103,7 +107,7 @@ export function parseRoads(buf: ArrayBuffer): RoadNet {
 			}
 		}
 	}
-	return { nx, nz, ea, eb, cls, oneway, start, px, pz, byChunk, segEdge };
+	return { nx, nz, ea, eb, cls, oneway, bridge, start, px, pz, byChunk, segEdge };
 }
 
 /** how wide a street of each class is, in units of 6 m */

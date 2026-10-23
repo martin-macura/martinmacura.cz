@@ -27,6 +27,8 @@ export interface Decks {
 	cellAt(x: number, z: number): number;
 	/** the same, smooth from cell to cell and in steps of 0.05, so that a car can drive on it; NaN away from the bridges */
 	at(x: number, z: number): number;
+	/** the ground under the deck of the cell (the bed of the river, or the valley): where its piers stand */
+	under(x: number, z: number): number;
 	/** a bridge has a cell in chunk (cx, cz) */
 	inChunk(cx: number, cz: number): boolean;
 }
@@ -37,6 +39,7 @@ export interface Decks {
  */
 export function findDecks(gw: number, gh: number, x0: number, z0: number, cells: Uint8Array, hill: (x: number, z: number) => number, skip: (x: number, z: number) => boolean, net: RoadNet | null): Decks {
 	const bridge = new Map<number, number>(); // cell -> its deck
+	const floor = new Map<number, number>(); // cell -> the ground under a deck over land
 	const chunks = new Set<number>();
 	const xy = (i: number): [number, number] => [(i % gw) + x0, Math.floor(i / gw) + z0];
 	const cell = (x: number, z: number) => (z - z0) * gw + (x - x0);
@@ -134,6 +137,77 @@ export function findDecks(gw: number, gh: number, x0: number, z0: number, cells:
 		}
 	}
 
+	// a viaduct over land: the street between the two ends of a run of bridge edges is straight, and where the land
+	// falls away under it, it is a deck on piers (the ends stay on the land)
+	if (net) {
+		const at = new Map<number, number[]>(); // node -> the bridge edges that end in it
+		for (let e = 0; e < net.ea.length; e++) {
+			if (!net.bridge[e] || net.ea[e] === net.eb[e]) continue;
+			for (const n of [net.ea[e], net.eb[e]]) at.set(n, [...(at.get(n) ?? []), e]);
+		}
+		const done = new Set<number>();
+		for (const [first, list] of at) {
+			if (list.length === 2) continue; // in the middle of a run
+			for (const e0 of list) {
+				if (done.has(e0)) continue;
+				// the run of edges from this end: each with the node it is entered from
+				const run: [number, number][] = [];
+				let e = e0;
+				let from = first;
+				let to = first;
+				for (;;) {
+					done.add(e);
+					run.push([e, from]);
+					to = net.ea[e] === from ? net.eb[e] : net.ea[e];
+					const next = at.get(to) ?? [];
+					if (next.length !== 2) break;
+					const n = next[0] === e ? next[1] : next[0];
+					if (done.has(n)) break;
+					e = n;
+					from = to;
+				}
+				// its length, and the height of the land at both ends
+				const length = (e: number) => {
+					let l = 0;
+					for (let i = net.start[e]; i < net.start[e + 1] - 1; i++) l += Math.hypot(net.px[i + 1] - net.px[i], net.pz[i + 1] - net.pz[i]);
+					return l;
+				};
+				const total = run.reduce((sum, [e]) => sum + length(e), 0);
+				if (total < 6) continue;
+				const hA = hill(net.nx[first], net.nz[first]);
+				const hB = hill(net.nx[to], net.nz[to]);
+				let walked = 0;
+				for (const [e, entered] of run) {
+					const a = net.start[e];
+					const b = net.start[e + 1] - 1;
+					const forward = net.ea[e] === entered;
+					for (let m = 0; m < b - a; m++) {
+						const i = forward ? a + m : b - m;
+						const j = forward ? i + 1 : i - 1;
+						const l = Math.hypot(net.px[j] - net.px[i], net.pz[j] - net.pz[i]);
+						const n = Math.max(1, Math.ceil(l / 0.5));
+						for (let k = 0; k < n; k++) {
+							const f = (k + 0.5) / n;
+							const x = net.px[i] + (net.px[j] - net.px[i]) * f;
+							const z = net.pz[i] + (net.pz[j] - net.pz[i]) * f;
+							const top = hA + (hB - hA) * ((walked + l * f) / total) + 0.1;
+							const ground = hill(x, z);
+							const ix = Math.floor(x);
+							const iz = Math.floor(z);
+							if (!inside(ix, iz) || top - ground < 0.45) continue;
+							const c = cell(ix, iz);
+							if (cells[c] & 1 || bridge.has(c)) continue;
+							bridge.set(c, Math.round(top * 20) / 20);
+							floor.set(c, ground);
+							chunks.add(Math.floor(ix / CH) * 1000 + Math.floor(iz / CH));
+						}
+						walked += l;
+					}
+				}
+			}
+		}
+	}
+
 	const cellAt = (x: number, z: number) => {
 		const ix = Math.floor(x);
 		const iz = Math.floor(z);
@@ -141,6 +215,7 @@ export function findDecks(gw: number, gh: number, x0: number, z0: number, cells:
 	};
 	return {
 		cellAt,
+		under: (x, z) => floor.get(cell(Math.floor(x), Math.floor(z))) ?? BED,
 		inChunk: (cx, cz) => chunks.has(cx * 1000 + cz),
 		at(x, z) {
 			if (Number.isNaN(cellAt(x, z))) return NaN;
@@ -210,11 +285,12 @@ export function bridgeBoxes(net: RoadNet, decks: Decks, cx: number, cz: number, 
 			walked += len / n;
 			if (!inChunk(x, z, cx, cz)) continue;
 			const h = decks.at(x, z);
-			if (Math.floor(before / PIER_EVERY) !== Math.floor(walked / PIER_EVERY) && h > 0.3) {
+			const ground = decks.under(x, z);
+			if (Math.floor(before / PIER_EVERY) !== Math.floor(walked / PIER_EVERY) && h - 0.38 - ground > 0.35) {
 				const bottom = h - 0.38;
-				add(0.7, bottom - BED, w + 0.6, PIER, x, (bottom + BED) / 2, z, ry);
+				add(0.7, bottom - ground, w + 0.6, PIER, x, (bottom + ground) / 2, z, ry);
 				add(0.82, 0.1, w + 0.74, DECK, x, bottom - 0.05, z, ry);
-				add(1.15, 0.012, w + 1.1, FOAM, x, 0.05, z, ry); // the water breaking on the pier
+				if (ground < 0) add(1.15, 0.012, w + 1.1, FOAM, x, 0.05, z, ry); // the water breaking on the pier
 			}
 			if (Math.floor(before / 3.3) !== Math.floor(walked / 3.3)) {
 				const side = lamps++ % 2 ? 1 : -1;

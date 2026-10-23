@@ -281,7 +281,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			}
 			// the streets as lines, where they are not on a bridge over the water or cut by the railway
 			if (lines) {
-				roadBoxes(roads, cx, cz, streetH, (x, z) => isWater(x, z) || !roadOK(x, z), add, columnH);
+				roadBoxes(roads, cx, cz, streetH, (x, z) => isWater(x, z) || !roadOK(x, z) || !Number.isNaN(decks.cellAt(x, z)), add, columnH);
 				bridgeBoxes(roads, decks, cx, cz, add, lamp, isWater);
 				sieglRoad(cx, cz, streetH, add);
 			}
