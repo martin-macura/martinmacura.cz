@@ -3,6 +3,7 @@
 // runs on. Nothing is live: it is the plan, so a late tram in the street is on time here. The tracks, the stops and
 // the stations are drawn into the chunks. Timetable: PID / ROPID (CC BY 4.0).
 import { InstancedMesh, Mesh, MeshBasicMaterial, MeshLambertMaterial, Object3D, type Scene } from "three";
+import { RAIL_PIER_GAP, railDeck, railPier } from "./praha-bridges";
 import { inChunk, walkSegment } from "./praha-roads";
 import { createLamps } from "./praha-traffic";
 import { COLORS, glass, unit } from "./util";
@@ -252,7 +253,7 @@ export function railProfile(data: TramData, terrain: (x: number, z: number) => n
 	const GRADE = 0.03; // height units per unit along: 2 % (the hills are raised half again)
 	const WINDOW = 25; // samples to each side, for the average
 	const HILL = 100; // samples to each side: a hill narrower than twice this (some 1.2 km) is gone through, not over
-	const BRIDGE = 0.5; // the least height over the water
+	const BRIDGE = 1; // the least height over the water
 	// the stations: a train stands at one on the land, never in a tunnel
 	const stations = new Map<number, [number, number][]>();
 	const skey = (x: number, z: number) => Math.floor(x / 16) * 100000 + Math.floor(z / 16);
@@ -394,33 +395,53 @@ export function lineBoxes(
 	add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void,
 	/** a railway: the height of its bed (railProfile) */
 	bed?: (x: number, z: number) => number,
+	/** a tramway: the height of the roadway of a bridge where one stands (praha-bridges.ts), else NaN */
+	deck?: (x: number, z: number) => number,
 ) {
 	const { tx, tz } = data;
 	if (far && !style.rail) return;
-	// a tramway stops at the water (the bridge carries the street); a railway crosses it on a deck of its own
-	const tramSkip = (x: number, z: number) => isWater(x, z) || skip(x, z);
+	// a tramway runs over the water on the deck of a bridge, and stops where there is none; a railway crosses it on a deck
+	// of its own
+	const tramGround = (x: number, z: number) => {
+		const d = deck ? deck(x, z) : NaN;
+		return Number.isNaN(d) ? ground(x, z) : d;
+	};
+	const tramSkip = (x: number, z: number) => (isWater(x, z) && !(deck && !Number.isNaN(deck(x, z)))) || skip(x, z);
 	const railGround = (x: number, z: number) => {
 		const h = bed ? bed(x, z) : NaN;
 		return Number.isNaN(h) ? ground(x, z) : h;
 	};
 	// in a tunnel: the hill stands well above the bed
 	const railSkip = (x: number, z: number) => skip(x, z) || ground(x, z) > railGround(x, z) + 1.2;
+	let lastWet = -9; // the last segment with water under it, and how far along the bridge the last pier is
+	let pierAt = 0;
 	for (const i of data.trackByChunk.get(cx * 1000 + cz) ?? []) {
 		const dx = tx[i + 1] - tx[i];
 		const dz = tz[i + 1] - tz[i];
 		const len = Math.hypot(dx, dz) || 1;
 		const side = (o: number) => [(-dz / len) * o, (dx / len) * o];
 		if (!style.rail) {
-			walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, ground, tramSkip, (x, z, l, h, ry) => add(l + 0.05, 0.05, 0.8, 0x4a4743, x, h + 0.05, z, ry));
+			walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, tramGround, tramSkip, (x, z, l, h, ry) => add(l + 0.05, 0.05, 0.8, 0x4a4743, x, h + 0.05, z, ry));
 			for (const o of [-0.24, 0.24]) {
 				const [ox, oz] = side(o);
-				walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, ground, tramSkip, (x, z, l, h, ry) => add(l + 0.05, 0.03, 0.06, 0x9aa3ad, x, h + 0.09, z, ry));
+				walkSegment(tx[i] + ox, tz[i] + oz, tx[i + 1] + ox, tz[i + 1] + oz, cx, cz, tramGround, tramSkip, (x, z, l, h, ry) => add(l + 0.05, 0.03, 0.06, 0x9aa3ad, x, h + 0.09, z, ry));
 			}
 			continue;
 		}
 		walkSegment(tx[i], tz[i], tx[i + 1], tz[i + 1], cx, cz, railGround, railSkip, (x, z, l, h, ry) => {
-			if (isWater(x, z)) add(l + 0.05, 0.25, 1.8, COLORS.steel, x, h - 0.1, z, ry); // the deck of a bridge
-			else {
+			if (isWater(x, z)) {
+				// the deck of a bridge, with its trusses, on piers
+				railDeck(add, isWater, x, z, l, h, ry, far);
+				if (!far) {
+					if (i !== lastWet && i - 1 !== lastWet) pierAt = RAIL_PIER_GAP / 2;
+					lastWet = i;
+					pierAt += l;
+					if (pierAt >= RAIL_PIER_GAP) {
+						pierAt -= RAIL_PIER_GAP;
+						railPier(add, x, z, h, ry);
+					}
+				}
+			} else {
 				// an embankment where the land lies lower than the bed
 				const g = ground(x, z);
 				if (h > g + 0.1) add(l + 0.05, h - g, far ? 2.8 : 2.2, 0x8a7a5c, x, g + (h - g) / 2, z, ry);
