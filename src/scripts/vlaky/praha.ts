@@ -1,12 +1,14 @@
 // Prague: the land is the real one. The river, the streets, the parks, the hills and some 230,000 houses come from
 // OpenStreetMap and the terrain model of ČÚZK, baked by scripts/praha/bake.py into public/vlaky/praha.dat. The trains,
 // the trams, the city buses and the metro (where it is out in the open) run on their real routes by the PID timetable
-// (praha-trams.ts); the cars are made up (praha-traffic.ts).
+// (praha-trams.ts); the cars are made up (praha-traffic.ts), and so are the white and red trucks of Siegl round their
+// yard in Kyje (praha-siegl.ts).
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: DMR 4G (c) ČÚZK. Timetables: PID (CC BY 4.0).
 import type { Scene } from "three";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
+import { createYard } from "./praha-siegl";
 import { createTraffic } from "./praha-traffic";
 import { BUS, createTrams, lineBoxes, METRO, nearTrack, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
 import { type Box, clamp, COLORS, hash2, lightMaterial, meshFromBoxes } from "./util";
@@ -503,6 +505,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 			const open = (x: number, z: number) => (x - ACCIDENT.x) ** 2 + (z - ACCIDENT.z) ** 2 > ACCIDENT.r ** 2;
 			all.push(createTraffic(scene, roads, groundAt, (x, z) => open(x, z) && (isWater(x, z) || roadOK(x, z))));
 			all.push(createAccident(scene, roads, groundAt));
+			all.push(createYard(scene, groundAt));
 		}
 		if (trams) all.push(createTrams(scene, trams, TRAM, groundAt));
 		if (buses) all.push(createTrams(scene, buses, BUS, groundAt));
