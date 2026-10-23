@@ -10,6 +10,10 @@ export interface RoadNet {
 	eb: Uint32Array;
 	cls: Uint8Array;
 	oneway: Uint8Array;
+	/** 1 where the map says the edge is a bridge */
+	bridge: Uint8Array;
+	/** 1 where the edge is drawn as the deck of a bridge (praha-bridges.ts, which sets it), not as a street */
+	lifted: Uint8Array;
 	/** the points of edge e, ends included, are px/pz[start[e] .. start[e + 1]) */
 	start: Uint32Array;
 	px: Float32Array;
@@ -53,6 +57,7 @@ export function parseRoads(buf: ArrayBuffer): RoadNet {
 	const eb = new Uint32Array(ne);
 	const cls = new Uint8Array(ne);
 	const oneway = new Uint8Array(ne);
+	const bridge = new Uint8Array(ne);
 	const start = new Uint32Array(ne + 1);
 	const xs: number[] = [];
 	const zs: number[] = [];
@@ -66,6 +71,7 @@ export function parseRoads(buf: ArrayBuffer): RoadNet {
 		eb[e] = bb;
 		cls[e] = f & 3;
 		oneway[e] = (f >> 2) & 1;
+		bridge[e] = (f >> 3) & 1;
 		start[e] = xs.length;
 		let lx = nx[a] * 4;
 		let lz = nz[a] * 4;
@@ -103,12 +109,12 @@ export function parseRoads(buf: ArrayBuffer): RoadNet {
 			}
 		}
 	}
-	return { nx, nz, ea, eb, cls, oneway, start, px, pz, byChunk, segEdge };
+	return { nx, nz, ea, eb, cls, oneway, bridge, lifted: new Uint8Array(ne), start, px, pz, byChunk, segEdge };
 }
 
 /** how wide a street of each class is, in units of 6 m */
 export const WIDTH = [0, 1, 1.7, 2.4];
-const COLOR = [0, 0x2b2b2b, 0x2b2b2b, 0x1f1f1f];
+export const COLOR = [0, 0x2b2b2b, 0x2b2b2b, 0x1f1f1f];
 const THICK = [0, 0.05, 0.06, 0.06];
 const LIFT = [0, 0.035, 0.04, 0.04];
 
@@ -176,6 +182,7 @@ export function roadBoxes(
 	const segs = net.byChunk.get(cx * 1000 + cz);
 	if (!segs) return;
 	for (const i of segs) {
+		if (net.lifted[net.segEdge[i]]) continue; // a bridge deck draws it
 		const c = net.cls[net.segEdge[i]];
 		const w = WIDTH[c];
 		const x1 = net.px[i];

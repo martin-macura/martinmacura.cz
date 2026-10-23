@@ -78,7 +78,8 @@ interface Car {
 	vmax: number;
 }
 
-export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
+/** `groundAt(x, z, onBridge)`: a car on a street that is a bridge deck rides on it; one on a street under a bridge does not */
+export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, z: number, onBridge?: boolean) => number, roadOK: (x: number, z: number) => boolean) {
 	const rand = rng(23);
 	const ne = net.ea.length;
 	// the length of every edge, and of the edge up to each of its points
@@ -289,7 +290,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			const off = net.oneway[car.e] && net.cls[car.e] < 3 ? 0 : KEEP_RIGHT[net.cls[car.e]];
 			const x = at.x - at.dz * off;
 			const z = at.z + at.dx * off;
-			const y = groundAt(x, z);
+			const y = groundAt(x, z, net.lifted[car.e] === 1);
 			dummy.position.set(x, y + 0.16, z);
 			dummy.rotation.set(0, Math.atan2(at.dx, at.dz), 0);
 			dummy.scale.set(0.5, 0.26, 0.95);
