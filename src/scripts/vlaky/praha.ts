@@ -5,7 +5,7 @@
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: DMR 4G (c) ČÚZK. Timetables: PID (CC BY 4.0).
 import type { Scene } from "three";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
-import { parseRoads, type RoadNet, roadBoxes } from "./praha-roads";
+import { parseRoads, type RoadNet, roadBoxes, WIDTH } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
 import { createTraffic } from "./praha-traffic";
 import { BUS, createTrams, lineBoxes, METRO, nearTrack, parseTrams, railProfile, TRAIN, TRAM, type TramData } from "./praha-trams";
@@ -122,7 +122,32 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	}
 
 	/** the terrain in columns of 2 x 2, flattened where the railway runs */
-	const columns = (railDist: (x: number, z: number) => number) => (x: number, z: number) => {
+	const columns = (railDist: (x: number, z: number) => number) => {
+		const known = new Map<number, number>(); // the ramps ask for the same columns again and again
+		return (x: number, z: number) => {
+			const key = (Math.floor(x / 2) + 4000) * 8000 + Math.floor(z / 2) + 4000;
+			let h = known.get(key);
+			if (h === undefined) known.set(key, (h = column(railDist, x, z)));
+			return h;
+		};
+	};
+	/**
+	 * the streets do not go up the hills in the steps of the columns: a street rises to a column higher than its own
+	 * on a ramp, over some two units before it (a wall higher than a step or two is left a wall)
+	 */
+	const RAMP = 0.15; // up, per unit along
+	const ramps = (columnH: (x: number, z: number) => number) => (x: number, z: number) => {
+		const own = columnH(x, z);
+		let h = own;
+		for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [0.71, 0.71], [-0.71, 0.71], [0.71, -0.71], [-0.71, -0.71]]) {
+			for (const d of [0.5, 1, 1.5, 2]) {
+				const n = columnH(x + dx * d, z + dz * d);
+				if (n - own < 0.6) h = Math.max(h, n - RAMP * d);
+			}
+		}
+		return Math.round(h * 40) / 40; // so that a flat stretch still makes runs
+	};
+	function column(railDist: (x: number, z: number) => number, x: number, z: number) {
 		const mx = Math.floor(x / 2) * 2 + 1;
 		const mz = Math.floor(z / 2) * 2 + 1;
 		const s = stepAt(mx, mz);
@@ -134,10 +159,11 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		const b = bed ? bed(mx, mz) : NaN;
 		if (b > 0 && h > b && h < b + 4 && !tunnelAt(mx, mz)) return Math.floor(b / STEP + 1e-6) * STEP;
 		return h;
-	};
+	}
 
 	function createChunkBuilder(railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean) {
 		const columnH = columns(railDist);
+		const streetH = ramps(columnH);
 
 		return function build(cx: number, cz: number, far: boolean, coarse = false): Chunk {
 			const x0 = cx * CH;
@@ -242,9 +268,9 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				}
 			}
 			// the streets as lines, where they are not on a bridge over the water or cut by the railway
-			if (lines) roadBoxes(roads, cx, cz, columnH, (x, z) => isWater(x, z) || !roadOK(x, z), add);
+			if (lines) roadBoxes(roads, cx, cz, streetH, (x, z) => isWater(x, z) || !roadOK(x, z), add, columnH);
 			// the tram rails and stops, up close
-			if (trams) lineBoxes(trams, TRAM, cx, cz, far, colH, isWater, (x, z) => !roadOK(x, z), add);
+			if (trams) lineBoxes(trams, TRAM, cx, cz, far, coarse ? colH : streetH, isWater, (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too
 			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, colH, isWater, tunnelAt, add, bed);
 			if (metro) lineBoxes(metro, METRO, cx, cz, far, colH, isWater, (x, z) => !metroSeen(x, z), add, metroBed);
@@ -370,17 +396,86 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				}
 				return false;
 			};
+			// the avenues and the motorways near the chunk: a big house at its edge can reach over a road of the next one
+			const wide: number[] = [];
+			if (roads) {
+				const seen = new Set<number>();
+				for (let a = -1; a <= 1; a++) {
+					for (let b = -1; b <= 1; b++) {
+						for (const i of roads.byChunk.get((cx + a) * 1000 + cz + b) ?? []) {
+							if (!seen.has(i) && roads.cls[roads.segEdge[i]] >= 2) wide.push(i);
+							seen.add(i);
+						}
+					}
+				}
+			}
+			const cutBack = (x: number, z: number, w: number, d: number, ang: number): [number, number, number, number] | false | null => {
+				if (!roads) return null;
+				const ca = Math.cos(ang);
+				const sa = Math.sin(ang);
+				let u0 = -w / 2;
+				let u1 = w / 2;
+				let v0 = -d / 2;
+				let v1 = d / 2;
+				let changed = false;
+				for (const i of wide) {
+					const c = WIDTH[roads.cls[roads.segEdge[i]]] / 2 + 0.1; // half the road, and a pavement
+					const ax = roads.px[i] - x;
+					const az = roads.pz[i] - z;
+					const bx = roads.px[i + 1] - x;
+					const bz = roads.pz[i + 1] - z;
+					const r = (w + d) / 2 + c;
+					if (Math.min(ax, bx) > r || Math.max(ax, bx) < -r || Math.min(az, bz) > r || Math.max(az, bz) < -r) continue;
+					const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.25));
+					for (let k = 0; k <= n; k++) {
+						const px = ax + ((bx - ax) * k) / n;
+						const pz = az + ((bz - az) * k) / n;
+						const pu = px * ca + pz * sa;
+						const pv = -px * sa + pz * ca;
+						if (pu <= u0 - c || pu >= u1 + c || pv <= v0 - c || pv >= v1 + c) continue;
+						// the cut that leaves the most of the house
+						const options: [number, number, number, number][] = [
+							[u0, Math.min(u1, pu - c), v0, v1],
+							[Math.max(u0, pu + c), u1, v0, v1],
+							[u0, u1, v0, Math.min(v1, pv - c)],
+							[u0, u1, Math.max(v0, pv + c), v1],
+						];
+						let best = options[0];
+						let area = -Infinity;
+						for (const q of options) {
+							const a = Math.max(0, q[1] - q[0]) * Math.max(0, q[3] - q[2]);
+							if (a > area) {
+								area = a;
+								best = q;
+							}
+						}
+						[u0, u1, v0, v1] = best;
+						changed = true;
+						if (u1 - u0 < 0.8 || v1 - v0 < 0.8) return false;
+					}
+				}
+				if (!changed) return null;
+				const mu = (u0 + u1) / 2;
+				const mv = (v0 + v1) / 2;
+				return [x + mu * ca - mv * sa, z + mu * sa + mv * ca, u1 - u0, v1 - v0];
+			};
 			const farFromSights = (x: number, z: number) => {
 				for (const l of LANDMARKS) if (Math.hypot(x - l.x, z - l.z) < l.clear) return false;
 				return true;
 			};
 			for (const i of data.byChunk.get(cx * 1000 + cz) ?? []) {
 				const o = i * 7;
-				const x = data.houses[o] / 4;
-				const z = data.houses[o + 1] / 4;
-				const w = Math.max(0.9, data.houses[o + 2] / 8);
-				const d = Math.max(0.9, data.houses[o + 3] / 8);
+				let x = data.houses[o] / 4;
+				let z = data.houses[o + 1] / 4;
+				let w = Math.max(0.9, data.houses[o + 2] / 8);
+				let d = Math.max(0.9, data.houses[o + 3] / 8);
 				const ang = (data.houses[o + 4] / 256) * Math.PI;
+				// a footprint is drawn as the smallest rectangle around it, and an irregular one reaches over the road next
+				// to it: the rectangle is cut back off the avenues and the motorways (the lanes of the old town run along
+				// the walls, the streets are left as they are); a house left too small goes
+				const cut = wide.length ? cutBack(x, z, w, d, ang) : null;
+				if (cut === false) continue;
+				if (cut) [x, z, w, d] = cut;
 				const metres = data.houses[o + 5];
 				const kind = data.houses[o + 6];
 				if ((coarse && w * d < 8) || !farFromSights(x, z) || onTrack(x, z, w, d, ang)) continue;
@@ -496,7 +591,8 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 	function createExtras(scene: Scene, railDist: (x: number, z: number) => number, roadOK: (x: number, z: number) => boolean): Extras {
 		const columnH = columns(railDist);
 		// on the road, or on the deck of a bridge over the water
-		const groundAt = (x: number, z: number) => (isWater(x, z) ? 0.4 : columnH(x, z) + 0.07);
+		const streetH = ramps(columnH);
+		const groundAt = (x: number, z: number) => (isWater(x, z) ? 0.4 : streetH(x, z) + 0.07);
 		const all: Extras[] = [];
 		if (roads) {
 			// the streets into the crossing in Vysočany are closed: the police are there

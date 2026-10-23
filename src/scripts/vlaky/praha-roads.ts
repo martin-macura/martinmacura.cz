@@ -172,6 +172,8 @@ export function roadBoxes(
 	ground: (x: number, z: number) => number,
 	skip: (x: number, z: number) => boolean,
 	add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void,
+	/** the land under the street, where the street runs higher than it (up a ramp): the street stands on it */
+	base: (x: number, z: number) => number = ground,
 ) {
 	const segs = net.byChunk.get(cx * 1000 + cz);
 	if (!segs) return;
@@ -182,10 +184,16 @@ export function roadBoxes(
 		const z1 = net.pz[i];
 		const x2 = net.px[i + 1];
 		const z2 = net.pz[i + 1];
-		walkSegment(x1, z1, x2, z2, cx, cz, ground, skip, (x, z, len, h, ry) => add(len, THICK[c], w, COLOR[c], x, h + LIFT[c], z, ry));
+		// the top of the street at h, its bottom down on the land under it
+		const slab = (l: number, d: number, x: number, z: number, h: number, ry: number) => {
+			const top = h + LIFT[c] + THICK[c] / 2;
+			const bottom = Math.min(top - THICK[c], base(x, z));
+			add(l, top - bottom, d, COLOR[c], x, (top + bottom) / 2, z, ry);
+		};
+		walkSegment(x1, z1, x2, z2, cx, cz, ground, skip, (x, z, len, h, ry) => slab(len, w, x, z, h, ry));
 		const ry = -Math.atan2(z2 - z1, x2 - x1);
 		// the joint at the start of the segment (the ends of the edges are joints too)
-		if (inChunk(x1, z1, cx, cz) && !skip(x1, z1)) add(w, THICK[c], w, COLOR[c], x1, ground(x1, z1) + LIFT[c], z1, ry);
-		if (i + 2 === net.start[net.segEdge[i] + 1] && inChunk(x2, z2, cx, cz) && !skip(x2, z2)) add(w, THICK[c], w, COLOR[c], x2, ground(x2, z2) + LIFT[c], z2, ry);
+		if (inChunk(x1, z1, cx, cz) && !skip(x1, z1)) slab(w, w, x1, z1, ground(x1, z1), ry);
+		if (i + 2 === net.start[net.segEdge[i] + 1] && inChunk(x2, z2, cx, cz) && !skip(x2, z2)) slab(w, w, x2, z2, ground(x2, z2), ry);
 	}
 }
