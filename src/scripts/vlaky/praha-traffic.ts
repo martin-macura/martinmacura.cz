@@ -9,6 +9,10 @@ import { type Focus, VEHICLES_UP_TO } from "./world";
 const MAX = 420;
 const SPEED = [0, 1.3, 2, 3]; // units a second, by class
 const KEEP_RIGHT = [0, 0.24, 0.42, 0.62];
+/** how many cars a stretch of street carries by class, against the busiest: the side streets are quiet, the avenues are not */
+const BUSY = [0, 0.1, 0.6, 1];
+/** what a car adds to the score of a turn onto a street of that class: it likes to be on the bigger road */
+const PULL = [0, 0, 0.9, 1.4];
 const CAR_COLORS = [COLORS.red, COLORS.yellow, COLORS.blue, COLORS.green, COLORS.white, 0xff9f2f, 0x7a6a9a, 0x2b2b2b, 0xb9b9b9, 0x9a2a2a].map((c) => new Color(c));
 const CH = 32;
 
@@ -161,7 +165,7 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 			if (e === car.e && dir === -car.dir) continue;
 			place(e, dir, Math.min(0.5, len[e]));
 			const straight = hx * at.dx + hz * at.dz; // 1 straight on, -1 back
-			const score = straight + rand() * 1.6 + (net.cls[e] === net.cls[car.e] ? 0.3 : 0);
+			const score = straight + rand() * 1.6 + PULL[net.cls[e]];
 			if (score > bestScore) {
 				bestScore = score;
 				best = k;
@@ -186,17 +190,21 @@ export function createTraffic(scene: Scene, net: RoadNet, groundAt: (x: number, 
 
 	/** puts the car on a random street of a random chunk in the view */
 	function spawn(car: Car, f: Focus) {
-		for (let tries = 0; tries < 12; tries++) {
+		for (let tries = 0; tries < 24; tries++) {
 			const cx = Math.floor((f.x + (rand() * 2 - 1) * f.r) / CH);
 			const cz = Math.floor((f.z + (rand() * 2 - 1) * f.r) / CH);
 			const segs = net.byChunk.get(cx * 1000 + cz);
 			// a chunk with few streets gets few cars, or its one road would jam
 			if (!segs || rand() * 120 > segs.length) continue;
 			const e = net.segEdge[segs[Math.floor(rand() * segs.length)]];
-			if (!ok(e)) continue;
+			if (rand() > BUSY[net.cls[e]] || !ok(e)) continue;
+			const dir = net.oneway[e] || rand() < 0.5 ? 1 : -1;
+			const s = rand() * len[e];
+			// not on top of a car in the same lane: the busy streets are crowded enough for that to happen
+			if (cars.some((c) => c !== car && c.e === e && c.dir === dir && Math.abs(c.s - s) < 1.4)) continue;
 			car.e = e;
-			car.dir = net.oneway[e] || rand() < 0.5 ? 1 : -1;
-			car.s = rand() * len[e];
+			car.dir = dir;
+			car.s = s;
 			car.vmax = SPEED[net.cls[e]] * (0.8 + rand() * 0.4);
 			car.v = car.vmax * 0.6;
 			return;
