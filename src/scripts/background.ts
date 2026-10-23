@@ -45,6 +45,9 @@ const ARRIVE_GAP = 1.5; // seconds between parts popping up
 const TRACE_WIDTH = 0.5;
 /** Playback speed of the whole scene, 1 being the original pace. (?t= in dev is in scene seconds.) */
 const SPEED = 1.5;
+/** The finished product first shows this page, then flips through the projects, quickly. Scene seconds. */
+const PAGE_HOLD = 1;
+const SLIDE_TIME = 0.8;
 
 // Flat toy colours on the page's near-black. Swap these to re-skin the whole scene.
 const PALETTE = {
@@ -488,6 +491,78 @@ const BUILDERS: Record<Key, (c: number) => { group: Group; height: number }> = {
 // ---------------------------------------------------------------------------------------------
 // the product: a tiny copy of this page in a chunky browser window
 
+// The projects, as 8-bit mockups on the 64x40 screen (not the real sites). Each draws below the 5px title bar.
+// The Softero slide is a stand-in wordmark until the real logo is dropped in.
+type Draw = (ctx: CanvasRenderingContext2D) => void;
+const rect = (ctx: CanvasRenderingContext2D, color: string, x: number, y: number, w: number, h: number) => {
+	ctx.fillStyle = color;
+	ctx.fillRect(x, y, w, h);
+};
+
+const SLIDES: Draw[] = [
+	// dispatch: a map with two routes and vehicles, a list of jobs on the side
+	(ctx) => {
+		rect(ctx, "#16202c", 3, 8, 40, 29); // map
+		rect(ctx, "#2a3a4c", 3, 20, 40, 1); // streets
+		rect(ctx, "#2a3a4c", 16, 8, 1, 29);
+		rect(ctx, "#2a3a4c", 30, 8, 1, 29);
+		rect(ctx, "#3d7bff", 6, 30, 11, 1); // route 1
+		rect(ctx, "#3d7bff", 16, 20, 1, 11);
+		rect(ctx, "#ffcf33", 16, 14, 15, 1); // route 2
+		rect(ctx, "#ffcf33", 30, 14, 1, 7);
+		rect(ctx, "#3d7bff", 5, 29, 3, 3); // vehicles
+		rect(ctx, "#ffcf33", 29, 19, 3, 3);
+		rect(ctx, "#ff5c4d", 36, 25, 3, 3); // incident
+		for (let i = 0; i < 4; i++) {
+			rect(ctx, "#1c1c1c", 46, 8 + i * 8, 15, 6); // job list
+			rect(ctx, ["#3d7bff", "#ffcf33", "#ff5c4d", "#2fd487"][i], 47, 9 + i * 8, 2, 4);
+			rect(ctx, "#8a8a8a", 51, 10 + i * 8, 8, 1);
+			rect(ctx, "#4a4a4a", 51, 12 + i * 8, 5, 1);
+		}
+	},
+	// driving school: a road with a car, a theory question with four answers
+	(ctx) => {
+		rect(ctx, "#4a6a9a", 3, 8, 58, 11); // sky
+		rect(ctx, "#2fd487", 3, 19, 58, 4); // grass
+		rect(ctx, "#2c2c2c", 3, 23, 58, 8); // road
+		for (let x = 5; x < 60; x += 8) rect(ctx, "#f2f2f2", x, 27, 4, 1);
+		rect(ctx, "#ff5c4d", 12, 24, 12, 4); // car
+		rect(ctx, "#ff5c4d", 15, 22, 6, 2);
+		rect(ctx, "#f2f2f2", 16, 22, 4, 1);
+		rect(ctx, "#0c0c0c", 13, 28, 3, 2);
+		rect(ctx, "#0c0c0c", 20, 28, 3, 2);
+		rect(ctx, "#f2f2f2", 46, 11, 7, 7); // road sign
+		rect(ctx, "#ff5c4d", 47, 12, 5, 5);
+		rect(ctx, "#f2f2f2", 48, 14, 3, 1);
+		rect(ctx, "#8a8a8a", 49, 18, 1, 5);
+		for (let i = 0; i < 4; i++) {
+			rect(ctx, i === 1 ? "#2fd487" : "#1c1c1c", 3 + i * 15, 33, 13, 4); // answers
+			rect(ctx, "#f2f2f2", 5 + i * 15, 35, 7, 1);
+		}
+	},
+	// Softero: five petals in a circle, one pointing down (the logo's mark, in its white variant) and the wordmark
+	(ctx) => {
+		const cx = 32;
+		const cy = 16;
+		for (let y = -9; y <= 9; y++) {
+			for (let x = -9; x <= 9; x++) {
+				const r = Math.hypot(x, y);
+				if (r < 1.8 || r > 8.2) continue;
+				// each petal is symmetric about its own radial axis; the first points straight down (screen y grows downward)
+				const a = Math.atan2(y, x);
+				const k = ((((a - Math.PI / 2) / (Math.PI * 0.4) + 0.5) % 1) + 1) % 1; // 0..1 within one petal's sector, 0.5 on its axis
+				const width = 0.14 + 0.24 * Math.sin(((r - 1.8) / 6.4) * Math.PI); // fat in the middle, tapered at the ends
+				if (Math.abs(k - 0.5) < width) rect(ctx, "#f2f2f2", cx + x, cy + y, 1, 1);
+			}
+		}
+		ctx.fillStyle = "#f2f2f2";
+		ctx.font = '8px "Press Start 2P", monospace';
+		ctx.textBaseline = "top";
+		ctx.fillText("Softero", 4, 27);
+		rect(ctx, "#093cff", 4, 36, 56, 1);
+	},
+];
+
 function buildProduct() {
 	const outer = new Group(); // popped and shrunk by the timeline
 	const g = new Group();
@@ -497,7 +572,7 @@ function buildProduct() {
 	put(box(2.6, 0.5, 1.6, 0xd0d0d0), 0, 0.3, -0.1, g);
 	put(box(0.9, 0.7, 0.4, 0xd0d0d0), 0, 0.75, -0.1, g);
 	// 64x40 texels with the page's own font at its native 8px, so every font pixel is exactly one texel
-	const tex = pixelTexture(64, 40, (ctx) => {
+	const drawPage = (ctx: CanvasRenderingContext2D) => {
 		ctx.fillStyle = "#0c0c0c";
 		ctx.fillRect(0, 0, 64, 40);
 		ctx.fillStyle = "#1c1c1c";
@@ -516,11 +591,27 @@ function buildProduct() {
 		ctx.fillRect(28, 33, 8, 1);
 		ctx.fillRect(40, 33, 3, 1);
 		ctx.fillRect(47, 33, 9, 1);
-	});
+	};
+	const drawSlide = (ctx: CanvasRenderingContext2D, i: number) => {
+		rect(ctx, "#0c0c0c", 0, 0, 64, 40);
+		rect(ctx, "#1c1c1c", 0, 0, 64, 5);
+		for (let n = 0; n < 3; n++) rect(ctx, "#4a4a4a", 2 + n * 3, 2, 1, 1);
+		SLIDES[i](ctx);
+	};
+	const tex = pixelTexture(64, 40, drawPage);
+	let shown = -1; // -1 is the page itself
+	const show = (i: number) => {
+		if (i === shown) return;
+		shown = i;
+		tex.ctx.clearRect(0, 0, 64, 40);
+		if (i < 0) drawPage(tex.ctx);
+		else drawSlide(tex.ctx, i);
+		tex.texture.needsUpdate = true;
+	};
 	const front = new Mesh(new PlaneGeometry(6.7, 4.2), new MeshBasicMaterial({ map: tex.texture }));
 	front.position.set(0, 3.0, 0.29);
 	g.add(front);
-	return { group: outer, height: 5.6 * PRODUCT_SCALE };
+	return { group: outer, height: 5.6 * PRODUCT_SCALE, show };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -886,7 +977,7 @@ export async function start(canvas: HTMLCanvasElement) {
 		arrive[DEPLOY] = depart[DEPLOY] + paths[DEPLOY].length / speed[DEPLOY];
 		mergeAt = arrive[DEPLOY] - 0.2;
 		productT = mergeAt + MERGE + 0.25;
-		outroAt = productT + 5;
+		outroAt = productT + PAGE_HOLD + SLIDES.length * SLIDE_TIME + 0.3;
 		cycle = outroAt + 0.9 + 0.8;
 	}
 
@@ -959,6 +1050,7 @@ export async function start(canvas: HTMLCanvasElement) {
 		// product: pops out when the parts land, then shrinks away
 		const pr = c - productT;
 		const shrinkOut = 1 - smooth((c - outroAt) / 0.8);
+		product.show(pr < PAGE_HOLD ? -1 : Math.min(SLIDES.length - 1, Math.floor((pr - PAGE_HOLD) / SLIDE_TIME)));
 		const p = pop(pr);
 		const ps = Math.max(0.0001, p * shrinkOut);
 		const wide = ps * (1 + (1 - clamp01(p)) * 0.25);
@@ -1035,7 +1127,7 @@ export async function start(canvas: HTMLCanvasElement) {
 	});
 
 	const staticFrame = frozen !== null || reduced;
-	const staticTime = frozen ?? productT + 2;
+	const staticTime = frozen ?? productT + 0.5;
 	const t0 = performance.now();
 
 	const draw = () => {
