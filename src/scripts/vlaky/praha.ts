@@ -4,6 +4,7 @@
 // (praha-trams.ts); the cars are made up (praha-traffic.ts).
 // Data: (c) OpenStreetMap contributors (ODbL). Terrain: DMR 4G (c) ČÚZK. Timetables: PID (CC BY 4.0).
 import type { Scene } from "three";
+import { bridgeBoxes, cellDeckBoxes, findDecks } from "./praha-bridges";
 import { CHARLES, LANDMARKS } from "./praha-landmarks";
 import { parseRoads, type RoadNet, roadBoxes, WIDTH } from "./praha-roads";
 import { ACCIDENT, createAccident } from "./praha-accident";
@@ -102,6 +103,13 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		return ix >= 0 && iz >= 0 && ix < gw / 2 && iz < gh / 2 ? data.steps[iz * (gw / 2) + ix] : 0;
 	};
 	const hillHeight = (x: number, z: number) => stepAt(x, z) * STEP;
+	// Charles Bridge has a deck of its own (charlesBridge); the other bridges over the water get one from the raster
+	const onCharles = (x: number, z: number, r: number) => {
+		const [ax, az] = CHARLES.from;
+		const t = clamp(((x - ax) * (CHARLES.to[0] - ax) + (z - az) * (CHARLES.to[1] - az)) / CHARLES_LEN ** 2, 0, 1);
+		return Math.hypot(x - ax - (CHARLES.to[0] - ax) * t, z - az - (CHARLES.to[1] - az) * t) < r;
+	};
+	const decks = findDecks(gw, gh, x0, z0, cells, hillHeight, (x, z) => onCharles(x, z, 2.2), roads);
 	// the railway runs at a height of its own, smooth where the terrain goes in steps
 	const bed = trains ? railProfile(trains, hillHeight, (x, z) => isWater(x, z), tunnelAt) : undefined;
 	// the metro, where it comes out of the ground: a railway of its own
@@ -228,8 +236,9 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 						case 5:
 							add(len, 0.06, 1, 0x2b2b2b, cxr, runH + 0.04, z);
 							break;
-						case 6: // a bridge
-							add(len, 0.3, 1, COLORS.stone, cxr, 0.25, z);
+						case 6: // a bridge: the water under it, and the deck
+							add(len, 0.05, 1, COLORS.water, cxr, 0.015, z);
+							cellDeckBoxes(len, runH, cxr, z, add);
 							break;
 						case 7:
 							add(len, 0.06, 1, 0x1f1f1f, cxr, runH + 0.04, z);
@@ -245,8 +254,10 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 						const c = cellAt(x, z);
 						h = colH(x, z);
 						const road = (c >> 1) & 3;
-						if (road && c & 1) kind = 6;
-						else if (c & 1) kind = 1;
+						if (road && c & 1 && !lines && !Number.isNaN(decks.cellAt(x, z))) {
+							kind = 6; // from afar a bridge is a deck of cells; up close it is drawn along the street, over the water
+							h = decks.cellAt(x, z);
+						} else if (c & 1) kind = 1;
 						else if (road && roadOK(x, z)) kind = road === 1 ? 4 : road === 2 ? 5 : 7;
 						else if (!road && ((c >> 4) & 3) === 1 && h === 0) kind = 2;
 						else if (!road && ((c >> 4) & 3) === 2 && h === 0) kind = 3;
@@ -268,22 +279,17 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 				}
 			}
 			// the streets as lines, where they are not on a bridge over the water or cut by the railway
-			if (lines) roadBoxes(roads, cx, cz, streetH, (x, z) => isWater(x, z) || !roadOK(x, z), add, columnH);
+			if (lines) {
+				roadBoxes(roads, cx, cz, streetH, (x, z) => isWater(x, z) || !roadOK(x, z), add, columnH);
+				bridgeBoxes(roads, decks, cx, cz, add, lamp, isWater);
+			}
 			// the tram rails and stops, up close
-			if (trams) lineBoxes(trams, TRAM, cx, cz, far, coarse ? colH : streetH, isWater, (x, z) => !roadOK(x, z), add);
+			// the tram runs on the deck of a bridge, which carries the street
+			const tramGround = coarse ? colH : streetH;
+			if (trams) lineBoxes(trams, TRAM, cx, cz, far, (x, z) => (Number.isNaN(decks.cellAt(x, z)) ? tramGround(x, z) : decks.at(x, z)), (x, z) => isWater(x, z) && Number.isNaN(decks.cellAt(x, z)), (x, z) => !roadOK(x, z), add);
 			// the railway, from afar too
 			if (trains) lineBoxes(trains, TRAIN, cx, cz, far, colH, isWater, tunnelAt, add, bed);
 			if (metro) lineBoxes(metro, METRO, cx, cz, far, colH, isWater, (x, z) => !metroSeen(x, z), add, metroBed);
-
-			// the piers of the bridges
-			for (let iz = 0; iz < CH; iz += 2) {
-				for (let ix = 0; ix < CH; ix += 2) {
-					const x = x0 + ix + 0.5;
-					const z = z0 + iz + 0.5;
-					const c = cellAt(x, z);
-					if (c & 8 && c & 1 && hash2(Math.floor(x / 2), Math.floor(z / 2)) % 2 === 0) add(0.9, 0.5, 0.9, 0x7d7463, x, 0, z);
-				}
-			}
 
 			// --- hills: columns of 2 x 2
 			const conifer = (x: number, z: number, y: number) => {
@@ -549,7 +555,7 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		};
 	}
 
-	/** Charles Bridge: a stone deck on piers with a parapet, statues and the three towers */
+	/** Charles Bridge: a stone deck that rises from the banks on piers, with a parapet, statues and the three towers */
 	function charlesBridge(add: (w: number, h: number, d: number, color: number, x: number, y: number, z: number, ry?: number) => void, lamp: typeof add) {
 		const [x1, z1] = CHARLES.from;
 		const [x2, z2] = CHARLES.to;
@@ -557,22 +563,33 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		const dz = (z2 - z1) / CHARLES_LEN;
 		const ry = -Math.atan2(dz, dx);
 		const along = (t: number, lat: number): [number, number] => [x1 + dx * t - dz * lat, z1 + dz * t + dx * lat];
+		// the top of the deck: low at the banks, high over the river (the quays are about the height of the water here)
+		const top = (t: number) => {
+			const f = clamp(Math.min(t, CHARLES_LEN - t) / 8, 0, 1);
+			return Math.round((0.15 + 0.85 * f * f * (3 - 2 * f)) * 20) / 20;
+		};
 		for (let t = 0.5; t < CHARLES_LEN; t += 1) {
 			const [x, z] = along(t, 0);
-			add(1.2, 0.3, 1.25, 0x9a8f7a, x, 0.4, z, ry);
-			for (const side of [-0.6, 0.6]) {
+			const y = top(t);
+			// the shadow on the water
+			const [sx, sz] = [x + (y - 0.15) * 0.57, z - (y - 0.15) * 0.71];
+			if (y > 0.3 && isWater(sx, sz)) add(1.2, 0.012, 2.2, 0x1f56cc, sx, 0.046, sz, ry);
+			add(1.2, 0.4, 1.7, 0xa59a84, x, y - 0.18, z, ry);
+			add(1.2, 0.03, 1.2, 0x8a8170, x, y + 0.035, z, ry); // the paving
+			for (const side of [-0.8, 0.8]) {
 				const [px, pz] = along(t, side);
-				add(0.12, 0.3, 1.25, 0x7d7463, px, 0.7, pz, ry);
+				add(1.2, 0.32, 0.14, 0xcfc8b4, px, y + 0.18, pz, ry);
 			}
 			if (Math.floor(t) % 5 === 2) {
-				for (const side of [-0.6, 0.6]) {
+				for (const side of [-0.8, 0.8]) {
 					const [px, pz] = along(t, side);
-					add(0.22, 0.75, 0.22, 0x2a2a2e, px, 1.0, pz);
+					add(0.24, 0.8, 0.24, 0x2a2a2e, px, y + 0.7, pz);
 				}
 			}
-			if (Math.floor(t) % 4 === 0) {
-				const [px, pz] = along(t, 0);
-				add(0.9, 0.6, 1.1, 0x7d7463, px, 0.05, pz, ry);
+			if (Math.floor(t) % 4 === 0 && y > 0.4) {
+				const bottom = y - 0.38;
+				add(1.1, bottom + 0.3, 2.0, 0x8d8472, x, (bottom - 0.3) / 2, z, ry);
+				add(1.0, 0.012, 2.6, 0xd6e8ff, x, 0.05, z, ry); // the water breaking on the pier
 			}
 		}
 		const tower = (t: number, w: number, h: number, roof: number) => {
@@ -592,11 +609,14 @@ function makePraha(buf: ArrayBuffer, roads: RoadNet | null, trams: TramData | nu
 		const columnH = columns(railDist);
 		// on the road, or on the deck of a bridge over the water
 		const streetH = ramps(columnH);
-		const groundAt = (x: number, z: number) => (isWater(x, z) ? 0.4 : streetH(x, z) + 0.07);
+		const groundAt = (x: number, z: number) => {
+			const deck = decks.at(x, z);
+			return Number.isNaN(deck) ? (isWater(x, z) ? 0.4 : streetH(x, z) + 0.07) : deck + 0.07;
+		};
 		const all: Extras[] = [];
 		if (roads) {
 			// the streets into the crossing in Vysočany are closed: the police are there
-			const open = (x: number, z: number) => (x - ACCIDENT.x) ** 2 + (z - ACCIDENT.z) ** 2 > ACCIDENT.r ** 2;
+			const open = (x: number, z: number) => (x - ACCIDENT.x) ** 2 + (z - ACCIDENT.z) ** 2 > ACCIDENT.r ** 2 && !onCharles(x, z, 2); // and Charles Bridge is for walking
 			all.push(createTraffic(scene, roads, groundAt, (x, z) => open(x, z) && (isWater(x, z) || roadOK(x, z))));
 			all.push(createAccident(scene, roads, groundAt));
 		}
